@@ -1,0 +1,39 @@
+{
+  "name": "@golovatskygroup/mcp-lens",
+  "version": "0.1.0",
+  "description": "NPX wrapper for mcp-lens - detects OS/arch, downloads binary from GitHub releases, verifies checksums, caches locally, and executes.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "mcp-lens": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "lens",
+    "proxy",
+    "github",
+    "wrapper"
+  ],
+  "author": "Grigorii Eleskin <grigorii@golovatskygroup.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/golovatskygroup/mcp-proxy.git",
+    "directory": "packages/mcp-lens"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
+}

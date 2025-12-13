@@ -1,0 +1,40 @@
+name: publish-npm
+
+on:
+  push:
+    tags:
+      - "npm-v*"
+    paths:
+      - "packages/mcp-lens/**"
+      - ".github/workflows/publish-npm.yml"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        working-directory: ./packages/mcp-lens
+        run: npm ci
+
+      - name: Build
+        working-directory: ./packages/mcp-lens
+        run: npm run build
+
+      - name: Publish to npm
+        working-directory: ./packages/mcp-lens
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
