@@ -1,0 +1,14 @@
+# Example configuration for mcp-github-proxy
+#
+# This proxy starts an upstream MCP server as a child process.
+# Currently the intended upstream is the official GitHub MCP server.
+
+upstream:
+  command: "npx"
+  args:
+    - "-y"
+    - "@modelcontextprotocol/server-github"
+  env:
+    # The upstream server expects this env var name.
+    # We map it from your local environment variable GITHUB_TOKEN.
+    GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"

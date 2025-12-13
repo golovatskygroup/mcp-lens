@@ -1,0 +1,8 @@
+# Binaries
+mcp-github-proxy
+
+# Local configs (may contain secrets)
+config.yaml
+
+# OS
+.DS_Store
