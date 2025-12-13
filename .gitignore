@@ -11,4 +11,5 @@ config.yaml
 node_modules/
 dist/
 *.tsbuildinfo
-package-lock.json
+# Note: keep package-lock.json committed for CI (npm ci)
+# (do not ignore)
