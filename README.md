@@ -1,6 +1,6 @@
-# mcp-lens (GitHub)
+# mcp-lens
 
-A tiny **MCP proxy** that wraps an upstream MCP server (currently: GitHub) and exposes a *smaller*, easier tool surface to the client.
+A tiny **MCP proxy** that wraps upstream MCP servers and exposes a *smaller*, easier tool surface to the client.
 
 Instead of loading every upstream tool into your client, this proxy starts the upstream server and provides **3 meta-tools**:
 - `search_tools` — find available tools by keyword/category
@@ -9,8 +9,10 @@ Instead of loading every upstream tool into your client, this proxy starts the u
 
 As you use `execute_tool`, the proxy **auto-activates** the underlying tools for the current session.
 
-> Status: **GitHub backend is implemented** (via `@modelcontextprotocol/server-github`).
-> More upstreams/adapters can be added later.
+## Status & Roadmap
+
+- **Implemented**: GitHub (via `@modelcontextprotocol/server-github`)
+- **Next**: GitLab, Jira, Slack, Notion, Linear
 
 ## Why this is useful (vs “just GitHub tools”)
 
@@ -44,7 +46,22 @@ Pick the asset matching your OS/arch (e.g. `darwin_arm64`, `linux_amd64`, `windo
 
 ## Configuration
 
-The proxy can run with a default upstream (GitHub MCP via `npx`), or you can pass a config file.
+### Quick Start — Environment Variables
+
+The simplest way to run `mcp-lens` is by setting environment variables. The proxy will use sensible defaults for the upstream MCP server.
+
+```bash
+export GITHUB_TOKEN="your_github_token_here"
+./mcp-lens
+```
+
+### Advanced — YAML Config
+
+For more control, you can pass a custom config file:
+
+```bash
+./mcp-lens -config ./config.example.yaml
+```
 
 Example `config.example.yaml`:
 
@@ -58,26 +75,19 @@ upstream:
     GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
 ```
 
-Run:
-
-```bash
-./mcp-lens -config ./config.example.yaml
-```
-
 ## Add to your editor / client
 
 Below are minimal MCP stdio examples.
 
 ### Claude Desktop
 
-Add a server entry pointing to the binary.
+Add a server entry pointing to the `mcp-lens` binary with environment variables:
 
 ```json
 {
   "mcpServers": {
     "github-proxy": {
       "command": "/ABS/PATH/TO/mcp-lens",
-      "args": ["-config", "/ABS/PATH/TO/config.example.yaml"],
       "env": {
         "GITHUB_TOKEN": "YOUR_TOKEN"
       }
@@ -86,18 +96,54 @@ Add a server entry pointing to the binary.
 }
 ```
 
-Create your own `config.yaml` locally (do **not** commit it), or use the example config as-is.
+#### Advanced — Using npx wrapper
 
-### Cursor
+If you prefer to run the upstream server directly without the proxy defaults, you can use the npx wrapper approach:
 
-Cursor supports MCP servers via a JSON config as well. Use the same stdio settings:
+```json
+{
+  "mcpServers": {
+    "github-proxy": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+#### Advanced — Using YAML config
+
+For full control, create a `config.yaml` and pass it to `mcp-lens`:
 
 ```json
 {
   "mcpServers": {
     "github-proxy": {
       "command": "/ABS/PATH/TO/mcp-lens",
-      "args": ["-config", "/ABS/PATH/TO/config.example.yaml"],
+      "args": ["-config", "/ABS/PATH/TO/config.yaml"],
+      "env": {
+        "GITHUB_TOKEN": "YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+### Cursor
+
+Cursor supports MCP servers via a JSON config as well. Use the same stdio settings as Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "github-proxy": {
+      "command": "/ABS/PATH/TO/mcp-lens",
       "env": {
         "GITHUB_TOKEN": "YOUR_TOKEN"
       }
@@ -108,7 +154,7 @@ Cursor supports MCP servers via a JSON config as well. Use the same stdio settin
 
 ### VS Code
 
-If you have an MCP extension / client that supports stdio servers, reuse the same command/args/env.
+If you have an MCP extension / client that supports stdio servers, reuse the same command/args/env setup as shown above.
 
 ## How it works
 
