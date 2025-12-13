@@ -1,8 +1,14 @@
-# Binaries
-mcp-lens
+# Binaries (built binary, not npm package)
+/mcp-lens
 
 # Local configs (may contain secrets)
 config.yaml
 
 # OS
 .DS_Store
+
+# Node dependencies and build artifacts (npm packages)
+node_modules/
+dist/
+*.tsbuildinfo
+package-lock.json
