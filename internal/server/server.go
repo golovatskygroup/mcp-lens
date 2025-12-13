@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nyarum/mcp-proxy/internal/proxy"
-	"github.com/nyarum/mcp-proxy/internal/registry"
-	"github.com/nyarum/mcp-proxy/internal/tools"
-	"github.com/nyarum/mcp-proxy/pkg/mcp"
+	"github.com/golovatskygroup/mcp-lens/internal/proxy"
+	"github.com/golovatskygroup/mcp-lens/internal/registry"
+	"github.com/golovatskygroup/mcp-lens/internal/tools"
+	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
 // Server is the main MCP proxy server

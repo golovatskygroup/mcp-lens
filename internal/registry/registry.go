@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"github.com/lithammer/fuzzysearch/fuzzy"
-	"github.com/nyarum/mcp-proxy/pkg/mcp"
+	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
 // Category represents a group of related tools

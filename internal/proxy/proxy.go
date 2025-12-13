@@ -11,7 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/nyarum/mcp-proxy/pkg/mcp"
+	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
 // Proxy manages connection to upstream MCP server

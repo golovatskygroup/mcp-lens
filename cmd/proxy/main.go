@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/nyarum/mcp-proxy/internal/proxy"
-	"github.com/nyarum/mcp-proxy/internal/server"
+	"github.com/golovatskygroup/mcp-lens/internal/proxy"
+	"github.com/golovatskygroup/mcp-lens/internal/server"
 	"gopkg.in/yaml.v3"
 )
 

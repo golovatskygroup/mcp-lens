@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nyarum/mcp-proxy/internal/registry"
-	"github.com/nyarum/mcp-proxy/pkg/mcp"
+	"github.com/golovatskygroup/mcp-lens/internal/registry"
+	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
 // Handler processes meta-tool calls
