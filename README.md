@@ -34,13 +34,13 @@ This proxy keeps the client surface minimal and makes discovery explicit.
 ### Option A — Build from source
 
 ```bash
-go build -o mcp-github-proxy ./cmd/proxy
+go build -o mcp-lens ./cmd/proxy
 ```
 
-### Option B — Use the prebuilt binary
+### Option B — Download from GitHub Releases
 
-This repo currently contains a local binary named `mcp-github-proxy` (macOS build).
-For a public release, prefer building yourself or publishing GitHub Releases per platform.
+For most users, the easiest path is to download the latest `mcp-lens` binary from GitHub Releases.
+Pick the asset matching your OS/arch (e.g. `darwin_arm64`, `linux_amd64`, `windows_amd64`).
 
 ## Configuration
 
@@ -61,7 +61,7 @@ upstream:
 Run:
 
 ```bash
-./mcp-github-proxy -config ./config.example.yaml
+./mcp-lens -config ./config.example.yaml
 ```
 
 ## Add to your editor / client
@@ -76,7 +76,7 @@ Add a server entry pointing to the binary.
 {
   "mcpServers": {
     "github-proxy": {
-      "command": "/ABS/PATH/TO/mcp-github-proxy",
+      "command": "/ABS/PATH/TO/mcp-lens",
       "args": ["-config", "/ABS/PATH/TO/config.example.yaml"],
       "env": {
         "GITHUB_TOKEN": "YOUR_TOKEN"
@@ -96,7 +96,7 @@ Cursor supports MCP servers via a JSON config as well. Use the same stdio settin
 {
   "mcpServers": {
     "github-proxy": {
-      "command": "/ABS/PATH/TO/mcp-github-proxy",
+      "command": "/ABS/PATH/TO/mcp-lens",
       "args": ["-config", "/ABS/PATH/TO/config.example.yaml"],
       "env": {
         "GITHUB_TOKEN": "YOUR_TOKEN"
