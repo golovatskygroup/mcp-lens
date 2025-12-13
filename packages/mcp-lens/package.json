@@ -1,6 +1,6 @@
 {
   "name": "@golovatskygroup/mcp-lens",
-  "version": "0.1.0",
+  "version": "1.0.2",
   "description": "NPX wrapper for mcp-lens - detects OS/arch, downloads binary from GitHub releases, verifies checksums, caches locally, and executes.",
   "type": "module",
   "main": "./dist/index.js",

@@ -94,39 +94,40 @@ func main() {
 // 3. Apply environment variable overrides on top
 func resolveUpstreamConfig(upstreamCfg UpstreamConfig) (proxy.Config, error) {
 	reg := presets.NewRegistry()
-	var result proxy.Config
 
-	// If preset is specified in config file, load it first
+	// Base config comes from YAML (or defaults already loaded into upstreamCfg).
+	// If upstream.preset is set in YAML, we use that preset as the base first.
+	base := proxy.Config{
+		Command: upstreamCfg.Command,
+		Args:    upstreamCfg.Args,
+		Env:     upstreamCfg.Env,
+	}
+
 	if upstreamCfg.Preset != "" {
 		presetCfg, ok := reg.Get(upstreamCfg.Preset)
 		if !ok {
 			return proxy.Config{}, fmt.Errorf("unknown preset: %s", upstreamCfg.Preset)
 		}
-		result = presetCfg
-	}
 
-	// Override with inline fields from config file
-	// These take precedence over preset values
-	if upstreamCfg.Command != "" {
-		result.Command = upstreamCfg.Command
-	}
-	if len(upstreamCfg.Args) > 0 {
-		result.Args = upstreamCfg.Args
-	}
-	if len(upstreamCfg.Env) > 0 {
-		if result.Env == nil {
-			result.Env = make(map[string]string)
+		base = presetCfg
+
+		// YAML inline fields override preset values.
+		if upstreamCfg.Command != "" {
+			base.Command = upstreamCfg.Command
 		}
-		for k, v := range upstreamCfg.Env {
-			result.Env[k] = v
+		if len(upstreamCfg.Args) > 0 {
+			base.Args = upstreamCfg.Args
+		}
+		if len(upstreamCfg.Env) > 0 {
+			if base.Env == nil {
+				base.Env = make(map[string]string)
+			}
+			for k, v := range upstreamCfg.Env {
+				base.Env[k] = v
+			}
 		}
 	}
 
-	// Apply environment variable overrides (highest priority)
-	merged, err := presets.MergeWithEnv(result)
-	if err != nil {
-		return proxy.Config{}, err
-	}
-
-	return merged, nil
+	// ENV overrides (including MCP_LENS_PRESET) have highest priority.
+	return presets.LoadConfig(base)
 }

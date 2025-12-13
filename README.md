@@ -42,17 +42,54 @@ go build -o mcp-lens ./cmd/proxy
 ### Option B — Download from GitHub Releases
 
 For most users, the easiest path is to download the latest `mcp-lens` binary from GitHub Releases.
-Pick the asset matching your OS/arch (e.g. `darwin_arm64`, `linux_amd64`, `windows_amd64`).
+Pick the archive matching your OS/arch (e.g. `mcp-lens_1.0.2_darwin_arm64.tar.gz`, `mcp-lens_1.0.2_linux_amd64.tar.gz`, `mcp-lens_1.0.2_windows_amd64.zip`).
+
+### Option C — Run via npx (auto-download)
+
+If you don’t want to pre-download a binary, you can run `mcp-lens` via an npx wrapper that downloads the correct GitHub Release asset, verifies `checksums.txt`, caches it, and then executes.
+
+```bash
+npx -y @golovatskygroup/mcp-lens
+```
 
 ## Configuration
 
 ### Quick Start — Environment Variables
 
-The simplest way to run `mcp-lens` is by setting environment variables. The proxy will use sensible defaults for the upstream MCP server.
+The simplest way to run `mcp-lens` is by setting environment variables.
+
+Default behavior is equivalent to `MCP_LENS_PRESET=github`.
 
 ```bash
+export MCP_LENS_PRESET="github"
 export GITHUB_TOKEN="your_github_token_here"
 ./mcp-lens
+```
+
+#### ENV reference
+
+- `MCP_LENS_PRESET` 		Preset name (currently: `github`)
+- `MCP_LENS_UPSTREAM_COMMAND` 	Override upstream command
+- `MCP_LENS_UPSTREAM_ARGS_JSON` 	JSON array of args, e.g. `'["-y","@modelcontextprotocol/server-github"]'`
+- `MCP_LENS_UPSTREAM_ENV_JSON` 	JSON object of env vars to merge, e.g. `'{"GITHUB_PERSONAL_ACCESS_TOKEN":"${GITHUB_TOKEN}"}'`
+
+(Values support `${VAR}` expansion.)
+
+#### Custom upstream example (no YAML)
+
+```bash
+export MCP_LENS_UPSTREAM_COMMAND="/abs/path/to/your-mcp-server"
+export MCP_LENS_UPSTREAM_ARGS_JSON='["--stdio"]'
+export MCP_LENS_UPSTREAM_ENV_JSON='{"API_TOKEN":"${API_TOKEN}"}'
+./mcp-lens
+```
+
+#### Using npx wrapper with env
+
+```bash
+export MCP_LENS_PRESET="github"
+export GITHUB_TOKEN="your_github_token_here"
+npx -y @golovatskygroup/mcp-lens
 ```
 
 ### Advanced — YAML Config
@@ -96,20 +133,18 @@ Add a server entry pointing to the `mcp-lens` binary with environment variables:
 }
 ```
 
-#### Advanced — Using npx wrapper
+#### Option C — Using npx wrapper (auto-download mcp-lens)
 
-If you prefer to run the upstream server directly without the proxy defaults, you can use the npx wrapper approach:
+This runs `mcp-lens` via `npx` (the wrapper downloads the matching GitHub Release, verifies checksums, caches, then execs).
 
 ```json
 {
   "mcpServers": {
     "github-proxy": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
-      ],
+      "args": ["-y", "@golovatskygroup/mcp-lens"],
       "env": {
+        "MCP_LENS_PRESET": "github",
         "GITHUB_TOKEN": "YOUR_TOKEN"
       }
     }
