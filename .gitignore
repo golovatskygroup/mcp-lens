@@ -3,6 +3,7 @@
 
 # Local configs (may contain secrets)
 config.yaml
+.env
 
 # OS
 .DS_Store
@@ -13,3 +14,4 @@ dist/
 *.tsbuildinfo
 # Note: keep package-lock.json committed for CI (npm ci)
 # (do not ignore)
+bin/*

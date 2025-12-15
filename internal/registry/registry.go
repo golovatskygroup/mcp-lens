@@ -61,6 +61,7 @@ func (r *Registry) Search(query string, category string, limit int) []mcp.ToolSu
 
 	var results []mcp.ToolSummary
 	query = strings.ToLower(query)
+	expanded := expandQuery(query)
 
 	// Collect tool names to search
 	var toolNames []string
@@ -96,29 +97,41 @@ func (r *Registry) Search(query string, category string, limit int) []mcp.ToolSu
 		nameLower := strings.ToLower(name)
 		descLower := strings.ToLower(summary.Description)
 
-		// Exact match in name
-		if strings.Contains(nameLower, query) {
-			score += 100
-		}
+		for _, term := range expanded {
+			// Exact match in name
+			if strings.Contains(nameLower, term) {
+				score += 100
+			}
 
-		// Fuzzy match in name
-		if fuzzy.Match(query, nameLower) {
-			score += 50
-		}
+			// Fuzzy match in name
+			if fuzzy.Match(term, nameLower) {
+				score += 50
+			}
 
-		// Match in description
-		if strings.Contains(descLower, query) {
-			score += 30
+			// Match in description
+			if strings.Contains(descLower, term) {
+				score += 30
+			}
 		}
 
 		// Check category keywords
 		for _, cat := range r.categories {
 			if r.findCategory(name) == cat.Name {
 				for _, kw := range cat.Keywords {
+					// If query includes the keyword, boost tools in that category.
 					if strings.Contains(query, strings.ToLower(kw)) {
 						score += 20
 					}
 				}
+			}
+		}
+
+		// Prefer read-only tools for review-like intents.
+		if isReviewIntent(query) {
+			if isMutationTool(nameLower) {
+				score -= 40
+			} else {
+				score += 10
 			}
 		}
 
@@ -208,6 +221,42 @@ func truncateDescription(desc string, maxLen int) string {
 	return desc[:maxLen-3] + "..."
 }
 
+func expandQuery(q string) []string {
+	terms := []string{q}
+	add := func(ts ...string) { terms = append(terms, ts...) }
+
+	if strings.Contains(q, "review") || strings.Contains(q, "files changed") || strings.Contains(q, "changed files") {
+		add("diff", "patch", "files", "pull_request", "pr")
+	}
+	if strings.Contains(q, "diff") || strings.Contains(q, "patch") {
+		add("compare", "files", "pull_request")
+	}
+	if strings.Contains(q, "pull request") || strings.Contains(q, "pr") {
+		add("pull", "review", "diff", "files")
+	}
+
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(terms))
+	for _, t := range terms {
+		t = strings.TrimSpace(strings.ToLower(t))
+		if t == "" { continue }
+		if _, ok := seen[t]; ok { continue }
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+func isReviewIntent(q string) bool {
+	q = strings.ToLower(q)
+	return strings.Contains(q, "review") || strings.Contains(q, "diff") || strings.Contains(q, "files changed") || strings.Contains(q, "changed files")
+}
+
+func isMutationTool(nameLower string) bool {
+	// Heuristic only: nudge search results away from mutating tools during review/discovery.
+	return strings.Contains(nameLower, "create_") || strings.Contains(nameLower, "update_") || strings.Contains(nameLower, "merge_") || strings.Contains(nameLower, "delete_") || strings.Contains(nameLower, "push_") || strings.Contains(nameLower, "write")
+}
+
 func defaultCategories() []Category {
 	return []Category{
 		{
@@ -231,11 +280,13 @@ func defaultCategories() []Category {
 		{
 			Name:        "pull_requests",
 			Description: "Pull request operations",
-			Keywords:    []string{"pr", "pull", "merge", "review", "diff"},
+			Keywords:    []string{"pr", "pull", "merge", "review", "diff", "patch", "files changed"},
 			Tools: []string{
 				"list_pull_requests", "pull_request_read", "create_pull_request",
 				"update_pull_request", "merge_pull_request", "search_pull_requests",
 				"update_pull_request_branch",
+				"list_pull_request_files", "get_pull_request_diff", "get_pull_request_details",
+				"list_pull_request_commits", "get_pull_request_checks", "prepare_pull_request_review_bundle",
 			},
 		},
 		{
