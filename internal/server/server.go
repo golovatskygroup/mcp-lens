@@ -220,7 +220,7 @@ func (s *Server) buildInstructions() string {
 	sb.WriteString("  - OAuth 2.0 (3LO): set JIRA_OAUTH_ACCESS_TOKEN + JIRA_CLOUD_ID (uses api.atlassian.com)\n\n")
 	sb.WriteString("- Multi-Jira setup:\n")
 	sb.WriteString("  - Set JIRA_CLIENTS_JSON (map of client aliases -> config) and optionally JIRA_DEFAULT_CLIENT.\n")
-	sb.WriteString("  - In queries, prefix input with `jira <client>` to route Jira calls to that client (e.g., `jira webpower show GO-27`).\n\n")
+	sb.WriteString("  - In queries, prefix input with `jira <client>` to route Jira calls to that client.\n\n")
 	sb.WriteString("Available categories:\n")
 
 	for _, cat := range s.registry.ListCategories() {

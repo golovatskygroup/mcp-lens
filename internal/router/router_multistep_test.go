@@ -6,8 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/golovatskygroup/mcp-lens/internal/testutil"
 )
 
 // TestMultiStepPRDetails tests a multi-step pipeline where the router
@@ -86,8 +89,16 @@ func TestMultiStepPRDetails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	// Ask the router to get details about a real PR
-	userRequest := "Get the details of the pull request https://github.com/1inch/pathfinder/pull/3475 including the title, author, and list of changed files"
+	prURL := strings.TrimSpace(os.Getenv("GITHUB_E2E_PR_URL"))
+	if prURL == "" {
+		prURL = "https://github.com/owner/repo/pull/1"
+	}
+	wantRepo, wantNumber, err := testutil.ParseGitHubPullRequestURL(prURL)
+	if err != nil {
+		t.Fatalf("invalid GITHUB_E2E_PR_URL %q: %v", prURL, err)
+	}
+
+	userRequest := "Get the details of the pull request " + prURL + " including the title, author, and list of changed files"
 
 	t.Logf("User request: %s", userRequest)
 
@@ -128,14 +139,14 @@ func TestMultiStepPRDetails(t *testing.T) {
 
 		// Check that repo is correctly parsed
 		if repo, ok := args["repo"].(string); ok {
-			if repo == "1inch/pathfinder" {
+			if repo == wantRepo {
 				t.Logf("  Repo correctly identified: %s", repo)
 			}
 		}
 
 		// Check that PR number is correctly parsed
 		if number, ok := args["number"].(float64); ok {
-			if int(number) == 3475 {
+			if int(number) == wantNumber {
 				t.Logf("  PR number correctly identified: %d", int(number))
 			}
 		}
@@ -193,7 +204,16 @@ func TestMultiStepPlanOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	plan, rawPlan, err := Plan(ctx, client, "What are the changes in https://github.com/1inch/pathfinder/pull/3475?", nil, catalog, 3)
+	prURL := strings.TrimSpace(os.Getenv("GITHUB_E2E_PR_URL"))
+	if prURL == "" {
+		prURL = "https://github.com/owner/repo/pull/1"
+	}
+	wantRepo, wantNumber, err := testutil.ParseGitHubPullRequestURL(prURL)
+	if err != nil {
+		t.Fatalf("invalid GITHUB_E2E_PR_URL %q: %v", prURL, err)
+	}
+
+	plan, rawPlan, err := Plan(ctx, client, "What are the changes in "+prURL+"?", nil, catalog, 3)
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)
 	}
@@ -212,9 +232,9 @@ func TestMultiStepPlanOnly(t *testing.T) {
 		if err := json.Unmarshal(step.Args, &args); err != nil {
 			continue
 		}
-		if repo, ok := args["repo"].(string); ok && repo == "1inch/pathfinder" {
-			if num, ok := args["number"].(float64); ok && int(num) == 3475 {
-				t.Log("Plan correctly parsed GitHub URL into repo=1inch/pathfinder, number=3475")
+		if repo, ok := args["repo"].(string); ok && repo == wantRepo {
+			if num, ok := args["number"].(float64); ok && int(num) == wantNumber {
+				t.Logf("Plan correctly parsed GitHub URL into repo=%s, number=%d", wantRepo, wantNumber)
 				return
 			}
 		}

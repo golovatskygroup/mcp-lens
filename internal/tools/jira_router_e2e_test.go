@@ -23,7 +23,7 @@ func TestRouterExecutesJiraReadOnlyPlan_GO27(t *testing.T) {
 
 	issueKey := os.Getenv("JIRA_E2E_ISSUE_KEY")
 	if issueKey == "" {
-		issueKey = "GO-27"
+		t.Skip("JIRA_E2E_ISSUE_KEY is not set (configure a real issue key for E2E)")
 	}
 
 	// Use v2 in tests for maximum compatibility across Cloud + Server/DC.

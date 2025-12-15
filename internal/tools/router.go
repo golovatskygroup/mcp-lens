@@ -40,12 +40,28 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 		}
 	}
 
+	// Convenience: allow prefixing the query with `confluence <client>` to route Confluence calls to that client.
+	if client, rest := extractConfluenceClientPrefix(in.Input); client != "" {
+		in.Context["confluence_client"] = client
+		if rest != "" {
+			in.Input = rest
+		}
+	}
+
 	// Provide configured Jira clients (no secrets) to the planner so it can pick the right instance.
 	if clients := jiraPublicClientsFromEnv(); len(clients) > 0 {
 		in.Context["jira_clients"] = clients
 	}
 	if def := strings.TrimSpace(os.Getenv("JIRA_DEFAULT_CLIENT")); def != "" {
 		in.Context["jira_default_client"] = def
+	}
+
+	// Provide configured Confluence clients (no secrets) to the planner so it can pick the right instance.
+	if clients := confluencePublicClientsFromEnv(); len(clients) > 0 {
+		in.Context["confluence_clients"] = clients
+	}
+	if def := strings.TrimSpace(os.Getenv("CONFLUENCE_DEFAULT_CLIENT")); def != "" {
+		in.Context["confluence_default_client"] = def
 	}
 
 	if in.MaxSteps <= 0 {
@@ -74,6 +90,8 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 
 	// Make Jira instance selection deterministic (do not rely on the model to thread it through).
 	h.applyJiraClientToPlan(&plan, in.Context)
+	// Make Confluence instance selection deterministic (do not rely on the model to thread it through).
+	h.applyConfluenceClientToPlan(&plan, in.Context)
 
 	if err := router.ValidatePlan(plan, policy, catalog, in.MaxSteps); err != nil {
 		return errorResult(err.Error() + "\nplan=" + string(rawPlan)), nil
@@ -127,6 +145,28 @@ func extractJiraClientPrefix(input string) (client string, rest string) {
 	return client, rest
 }
 
+func extractConfluenceClientPrefix(input string) (client string, rest string) {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return "", ""
+	}
+	lower := strings.ToLower(s)
+	if !strings.HasPrefix(lower, "confluence ") {
+		return "", ""
+	}
+	after := strings.TrimSpace(s[len("confluence "):])
+	if after == "" {
+		return "", ""
+	}
+	parts := strings.Fields(after)
+	if len(parts) == 0 {
+		return "", ""
+	}
+	client = parts[0]
+	rest = strings.TrimSpace(after[len(parts[0]):])
+	return client, rest
+}
+
 func (h *Handler) applyJiraClientToPlan(plan *router.ModelPlan, ctx map[string]any) {
 	if plan == nil || len(plan.Steps) == 0 {
 		return
@@ -143,6 +183,43 @@ func (h *Handler) applyJiraClientToPlan(plan *router.ModelPlan, ctx map[string]a
 	for i := range plan.Steps {
 		step := plan.Steps[i]
 		if step.Source != "local" || !strings.HasPrefix(step.Name, "jira_") {
+			continue
+		}
+
+		var args map[string]any
+		if err := json.Unmarshal(step.Args, &args); err != nil || args == nil {
+			continue
+		}
+		if _, ok := args["client"]; ok {
+			continue
+		}
+		// If caller explicitly set base_url, do not override it.
+		if base, ok := args["base_url"].(string); ok && strings.TrimSpace(base) != "" {
+			continue
+		}
+		args["client"] = client
+		if b, err := json.Marshal(args); err == nil {
+			plan.Steps[i].Args = b
+		}
+	}
+}
+
+func (h *Handler) applyConfluenceClientToPlan(plan *router.ModelPlan, ctx map[string]any) {
+	if plan == nil || len(plan.Steps) == 0 {
+		return
+	}
+	if ctx == nil {
+		return
+	}
+	client, _ := ctx["confluence_client"].(string)
+	client = strings.TrimSpace(client)
+	if client == "" {
+		return
+	}
+
+	for i := range plan.Steps {
+		step := plan.Steps[i]
+		if step.Source != "local" || !strings.HasPrefix(step.Name, "confluence_") {
 			continue
 		}
 
@@ -355,6 +432,28 @@ func (h *Handler) createContinuationStep(originalStep router.PlanStep, result ma
 				Args:   newArgs,
 				Reason: fmt.Sprintf("Auto-continuation: fetching page %d", int(nextPage)),
 			}
+		}
+	}
+
+	// Generic cursor/start pagination (e.g. Confluence).
+	if nextCursor, ok := result["next_cursor"].(string); ok && strings.TrimSpace(nextCursor) != "" {
+		args["cursor"] = nextCursor
+		newArgs, _ := json.Marshal(args)
+		return &router.PlanStep{
+			Name:   originalStep.Name,
+			Source: originalStep.Source,
+			Args:   newArgs,
+			Reason: "Auto-continuation: fetching next page using cursor",
+		}
+	}
+	if nextStart, ok := result["next_start"].(float64); ok {
+		args["start"] = int(nextStart)
+		newArgs, _ := json.Marshal(args)
+		return &router.PlanStep{
+			Name:   originalStep.Name,
+			Source: originalStep.Source,
+			Args:   newArgs,
+			Reason: fmt.Sprintf("Auto-continuation: fetching next page at start %d", int(nextStart)),
 		}
 	}
 

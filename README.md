@@ -53,7 +53,10 @@ claude mcp add --transport stdio mcp-lens \
         "GITHUB_TOKEN": "${GITHUB_TOKEN}",
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}",
         "JIRA_BASE_URL": "${JIRA_BASE_URL}",
-        "JIRA_PAT": "${JIRA_PAT}"
+        "JIRA_PAT": "${JIRA_PAT}",
+        "CONFLUENCE_BASE_URL": "${CONFLUENCE_BASE_URL}",
+        "CONFLUENCE_EMAIL": "${CONFLUENCE_EMAIL}",
+        "CONFLUENCE_API_TOKEN": "${CONFLUENCE_API_TOKEN}"
       }
     }
   }
@@ -81,6 +84,18 @@ claude mcp add --transport stdio mcp-lens \
   - Env: `JIRA_CLIENTS_JSON` + optional `JIRA_DEFAULT_CLIENT`
   - Lets you target a specific Jira instance by prefixing your request: `jira <client> ...`
 
+- **Confluence local tools**
+  - Env: `CONFLUENCE_BASE_URL` + one auth method:
+    - Cloud (basic): `CONFLUENCE_EMAIL` + `CONFLUENCE_API_TOKEN`
+    - Bearer/PAT: `CONFLUENCE_BEARER_TOKEN` or `CONFLUENCE_PAT`
+    - Cloud (OAuth/3LO): `CONFLUENCE_OAUTH_ACCESS_TOKEN` + `CONFLUENCE_CLOUD_ID`
+    - DC/Server (basic, if enabled): `CONFLUENCE_USERNAME` + `CONFLUENCE_PASSWORD`
+  - Enables router to execute Confluence read-only calls (spaces/pages/CQL search)
+
+- **Multi-Confluence routing**
+  - Env: `CONFLUENCE_CLIENTS_JSON` + optional `CONFLUENCE_DEFAULT_CLIENT`
+  - Lets you target a specific Confluence instance by prefixing your request: `confluence <client> ...`
+
 - **Upstream MCP server selection**
   - Env: `MCP_LENS_PRESET` (e.g. `github`) or `MCP_LENS_UPSTREAM_*`
   - Changes which upstream MCP server is launched (and therefore which upstream tools exist)
@@ -92,6 +107,7 @@ claude mcp add --transport stdio mcp-lens \
 - **Works with big PRs**: chunked diffs + auto-pagination helpers
 - **Upstream-agnostic**: runs any upstream MCP server as a child process (default: GitHub MCP)
 - **Jira support included**: read-only Jira calls when auth is configured
+- **Confluence support included**: read-only Confluence calls when auth is configured
 
 ## How it works (technically)
 

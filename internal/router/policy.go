@@ -26,6 +26,10 @@ func DefaultPolicy() Policy {
 		"jira_get_issue_comments":            {},
 		"jira_get_issue_transitions":         {},
 		"jira_list_projects":                 {},
+		"confluence_list_spaces":             {},
+		"confluence_get_page":                {},
+		"confluence_get_page_by_title":       {},
+		"confluence_search_cql":              {},
 	}
 
 	// Start conservative: empty upstream allowlist.

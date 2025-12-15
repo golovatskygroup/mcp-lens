@@ -392,6 +392,71 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 			}`),
 		},
 		{
+			Name:        "confluence_list_spaces",
+			Description: "List Confluence spaces (read-only). Uses Cloud v2 (/wiki/api/v2/spaces) when available; falls back to v1 (/rest/api/space).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"client": {"type": "string", "description": "Confluence client alias (key in CONFLUENCE_CLIENTS_JSON). If omitted, uses CONFLUENCE_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL (e.g., https://your-site.atlassian.net or https://your-site.atlassian.net/wiki or https://confluence.company.com). If omitted, uses env."},
+					"use_v2": {"type": "boolean", "description": "Prefer Cloud REST API v2 when available (default: true).", "default": true},
+					"limit": {"type": "integer", "description": "Max results per page (default: 25, max: 250).", "default": 25},
+					"cursor": {"type": "string", "description": "Pagination cursor (Cloud v2)."},
+					"start": {"type": "integer", "description": "Pagination start offset (v1).", "default": 0}
+				}
+			}`),
+		},
+		{
+			Name:        "confluence_get_page",
+			Description: "Get Confluence page by id (read-only). For Cloud uses v2 when body_format=storage; otherwise uses v1 with expand=body.*.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"id": {"type": "string", "description": "Page/content id."},
+					"body_format": {"type": "string", "description": "Body representation for v1 expand. For Cloud v2 only storage is supported here.", "enum": ["storage","view","export_view"], "default": "storage"},
+					"expand": {"type": "array", "items": {"type": "string"}, "description": "Additional v1 expand fields (e.g., [\"history\",\"ancestors\"])."},
+					"client": {"type": "string", "description": "Confluence client alias (key in CONFLUENCE_CLIENTS_JSON). If omitted, uses CONFLUENCE_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"use_v2": {"type": "boolean", "description": "Prefer Cloud REST API v2 when available (default: true).", "default": true}
+				},
+				"required": ["id"]
+			}`),
+		},
+		{
+			Name:        "confluence_get_page_by_title",
+			Description: "Find a Confluence page by space_key + title (read-only). Uses v1 content endpoint with expand=body.*.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"space_key": {"type": "string", "description": "Space key (e.g., DOCS)."},
+					"title": {"type": "string", "description": "Exact page title."},
+					"body_format": {"type": "string", "description": "Body representation (storage/view/export_view).", "enum": ["storage","view","export_view"], "default": "storage"},
+					"expand": {"type": "array", "items": {"type": "string"}, "description": "Additional expand fields."},
+					"limit": {"type": "integer", "description": "Max results to return (default: 5, max: 25).", "default": 5},
+					"client": {"type": "string", "description": "Confluence client alias (key in CONFLUENCE_CLIENTS_JSON). If omitted, uses CONFLUENCE_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."}
+				},
+				"required": ["space_key","title"]
+			}`),
+		},
+		{
+			Name:        "confluence_search_cql",
+			Description: "Search Confluence content using CQL (read-only). Uses v1 search endpoint (/rest/api/search). Supports cursor pagination when provided by Confluence Cloud.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"cql": {"type": "string", "description": "CQL query (e.g., \"type=page AND space=DOCS AND text ~ \\\"oncall\\\"\")."},
+					"limit": {"type": "integer", "description": "Max results per page (default: 25, max: 250).", "default": 25},
+					"cursor": {"type": "string", "description": "Pagination cursor (Cloud)."},
+					"start": {"type": "integer", "description": "Pagination start offset (v1/DC).", "default": 0},
+					"include_archived_spaces": {"type": "boolean", "description": "Whether to include archived spaces."},
+					"client": {"type": "string", "description": "Confluence client alias (key in CONFLUENCE_CLIENTS_JSON). If omitted, uses CONFLUENCE_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."}
+				},
+				"required": ["cql"]
+			}`),
+		},
+		{
 			Name:        "router",
 			Description: "(Internal) Planning router used by this proxy. Most MCP clients should call the `query` tool instead. `router` and `query` share the same input/output.",
 			InputSchema: json.RawMessage(`{
@@ -500,6 +565,14 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.jiraUpdateIssue(ctx, args)
 	case "jira_add_attachment":
 		return h.jiraAddAttachment(ctx, args)
+	case "confluence_list_spaces":
+		return h.confluenceListSpaces(ctx, args)
+	case "confluence_get_page":
+		return h.confluenceGetPage(ctx, args)
+	case "confluence_get_page_by_title":
+		return h.confluenceGetPageByTitle(ctx, args)
+	case "confluence_search_cql":
+		return h.confluenceSearchCQL(ctx, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -514,7 +587,8 @@ func (h *Handler) IsLocalTool(name string) bool {
 	case "router", "query",
 		"get_pull_request_details", "list_pull_request_files", "get_pull_request_diff", "get_pull_request_summary", "get_pull_request_file_diff", "get_file_at_ref", "prepare_pull_request_review_bundle", "list_pull_request_commits", "get_pull_request_checks", "fetch_complete_pr_diff", "fetch_complete_pr_files",
 		"jira_get_myself", "jira_get_issue", "jira_search_issues", "jira_get_issue_comments", "jira_get_issue_transitions", "jira_list_projects",
-		"jira_add_comment", "jira_transition_issue", "jira_create_issue", "jira_update_issue", "jira_add_attachment":
+		"jira_add_comment", "jira_transition_issue", "jira_create_issue", "jira_update_issue", "jira_add_attachment",
+		"confluence_list_spaces", "confluence_get_page", "confluence_get_page_by_title", "confluence_search_cql":
 		return true
 	default:
 		return false
@@ -615,6 +689,9 @@ func expandQuery(q string) []string {
 	if strings.Contains(q, "jira") || strings.Contains(q, "jql") || strings.Contains(q, "ticket") || strings.Contains(q, "issue") {
 		add("jira", "jql", "issue", "ticket", "search", "comment", "transition", "project")
 	}
+	if strings.Contains(q, "confluence") || strings.Contains(q, "wiki") || strings.Contains(q, "cql") || strings.Contains(q, "space") || strings.Contains(q, "page") {
+		add("confluence", "wiki", "cql", "search", "space", "page", "content", "title")
+	}
 
 	// Dedupe
 	seen := map[string]struct{}{}
@@ -664,6 +741,10 @@ func searchLocalTools(query string, category string, limit int) []mcp.ToolSummar
 		{Name: "jira_create_issue", Category: "local", Description: "Create Jira issue (mutating; blocked by default policy)."},
 		{Name: "jira_update_issue", Category: "local", Description: "Update Jira issue (mutating; blocked by default policy)."},
 		{Name: "jira_add_attachment", Category: "local", Description: "Add Jira issue attachment (mutating; blocked by default policy)."},
+		{Name: "confluence_list_spaces", Category: "local", Description: "List Confluence spaces (Cloud v2 preferred; v1 fallback)."},
+		{Name: "confluence_get_page", Category: "local", Description: "Get Confluence page by id (v2 storage preferred; v1 fallback)."},
+		{Name: "confluence_get_page_by_title", Category: "local", Description: "Find Confluence page by space_key + title."},
+		{Name: "confluence_search_cql", Category: "local", Description: "Search Confluence using CQL with pagination."},
 	}
 
 	// Basic scoring.

@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/golovatskygroup/mcp-lens/internal/registry"
+	"github.com/golovatskygroup/mcp-lens/internal/testutil"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
@@ -31,6 +33,15 @@ func TestQueryE2E_RealPR(t *testing.T) {
 		t.Skip("Skipping: GITHUB_TOKEN required for GitHub API calls")
 	}
 
+	prURL := strings.TrimSpace(os.Getenv("GITHUB_E2E_PR_URL"))
+	if prURL == "" {
+		t.Skip("Skipping: set GITHUB_E2E_PR_URL=https://github.com/<owner>/<repo>/pull/<number> to run this E2E test")
+	}
+	wantRepo, wantNumber, err := testutil.ParseGitHubPullRequestURL(prURL)
+	if err != nil {
+		t.Fatalf("invalid GITHUB_E2E_PR_URL %q: %v", prURL, err)
+	}
+
 	reg := registry.NewRegistry()
 
 	// Handler with no upstream executor (we only use local tools)
@@ -44,12 +55,14 @@ func TestQueryE2E_RealPR(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// Call the query tool with a request about a real PR
-	args := json.RawMessage(`{
-		"input": "Get details and changed files for https://github.com/1inch/pathfinder/pull/3475",
+	// Call the query tool with a request about a PR from env.
+	payload := map[string]any{
+		"input":     "Get details and changed files for " + prURL,
 		"max_steps": 3,
-		"format": "json"
-	}`)
+		"format":    "json",
+	}
+	b, _ := json.Marshal(payload)
+	args := json.RawMessage(b)
 
 	t.Log("Calling query tool...")
 	result, err := h.Handle(ctx, "query", args)
@@ -105,6 +118,12 @@ func TestQueryE2E_RealPR(t *testing.T) {
 				// Check if we got real PR data
 				if name == "get_pull_request_details" && ok == true {
 					if result, ok := s["result"].(map[string]any); ok {
+						if gotRepo, ok := result["repo"].(string); ok && gotRepo != wantRepo {
+							t.Errorf("unexpected repo in get_pull_request_details: got %q want %q", gotRepo, wantRepo)
+						}
+						if gotNum, ok := result["number"].(float64); ok && int(gotNum) != wantNumber {
+							t.Errorf("unexpected number in get_pull_request_details: got %d want %d", int(gotNum), wantNumber)
+						}
 						if title, ok := result["title"].(string); ok {
 							t.Logf("    PR Title: %s", title)
 						}
@@ -120,7 +139,14 @@ func TestQueryE2E_RealPR(t *testing.T) {
 				}
 
 				if name == "list_pull_request_files" && ok == true {
-					if files, ok := s["result"].([]any); ok {
+					if out, ok := s["result"].(map[string]any); ok {
+						if gotRepo, ok := out["repo"].(string); ok && gotRepo != wantRepo {
+							t.Errorf("unexpected repo in list_pull_request_files: got %q want %q", gotRepo, wantRepo)
+						}
+						if gotNum, ok := out["number"].(float64); ok && int(gotNum) != wantNumber {
+							t.Errorf("unexpected number in list_pull_request_files: got %d want %d", int(gotNum), wantNumber)
+						}
+						files, _ := out["files"].([]any)
 						t.Logf("    Changed files: %d", len(files))
 						for j, f := range files {
 							if j >= 3 {
@@ -153,6 +179,14 @@ func TestQueryE2E_PRSummary(t *testing.T) {
 		t.Skip("Skipping: GITHUB_TOKEN required for GitHub API calls")
 	}
 
+	prURL := strings.TrimSpace(os.Getenv("GITHUB_E2E_PR_URL"))
+	if prURL == "" {
+		t.Skip("Skipping: set GITHUB_E2E_PR_URL=https://github.com/<owner>/<repo>/pull/<number> to run this E2E test")
+	}
+	if _, _, err := testutil.ParseGitHubPullRequestURL(prURL); err != nil {
+		t.Fatalf("invalid GITHUB_E2E_PR_URL %q: %v", prURL, err)
+	}
+
 	reg := registry.NewRegistry()
 	h := NewHandler(reg, func(name string, args json.RawMessage) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{
@@ -164,12 +198,14 @@ func TestQueryE2E_PRSummary(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	args := json.RawMessage(`{
-		"input": "Summarize the PR https://github.com/1inch/pathfinder/pull/3475",
-		"max_steps": 2,
+	payload := map[string]any{
+		"input":          "Summarize the PR " + prURL,
+		"max_steps":      2,
 		"include_answer": true,
-		"format": "json"
-	}`)
+		"format":         "json",
+	}
+	b, _ := json.Marshal(payload)
+	args := json.RawMessage(b)
 
 	t.Log("Calling query tool with include_answer=true...")
 	result, err := h.Handle(ctx, "query", args)
@@ -236,11 +272,22 @@ func TestQueryDryRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	args := json.RawMessage(`{
-		"input": "Get PR #3475 from 1inch/pathfinder",
+	prURL := strings.TrimSpace(os.Getenv("GITHUB_E2E_PR_URL"))
+	if prURL == "" {
+		prURL = "https://github.com/owner/repo/pull/1"
+	}
+	wantRepo, wantNumber, err := testutil.ParseGitHubPullRequestURL(prURL)
+	if err != nil {
+		t.Fatalf("invalid GITHUB_E2E_PR_URL %q: %v", prURL, err)
+	}
+
+	payload := map[string]any{
+		"input":   "Get PR #" + strconv.Itoa(wantNumber) + " from " + wantRepo,
 		"dry_run": true,
-		"format": "json"
-	}`)
+		"format":  "json",
+	}
+	b, _ := json.Marshal(payload)
+	args := json.RawMessage(b)
 
 	result, err := h.Handle(ctx, "query", args)
 	if err != nil {
@@ -269,8 +316,13 @@ func TestQueryDryRun(t *testing.T) {
 			step := steps[0].(map[string]any)
 			args := step["args"].(map[string]any)
 			if repo, ok := args["repo"].(string); ok {
-				if !strings.Contains(repo, "pathfinder") {
-					t.Errorf("Expected repo to contain 'pathfinder', got %s", repo)
+				if repo != wantRepo {
+					t.Errorf("Expected repo %q, got %q", wantRepo, repo)
+				}
+			}
+			if num, ok := args["number"].(float64); ok {
+				if int(num) != wantNumber {
+					t.Errorf("Expected PR number %d, got %d", wantNumber, int(num))
 				}
 			}
 		}
