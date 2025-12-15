@@ -48,6 +48,30 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 		}
 	}
 
+	// Convenience: allow prefixing the query with `grafana <client>` to route Grafana calls to that client.
+	if client, rest := extractGrafanaClientPrefix(in.Input); client != "" {
+		in.Context["grafana_client"] = client
+		if rest != "" {
+			in.Input = rest
+		}
+	}
+
+	// Convenience: if the input contains a Grafana dashboard URL, extract defaults for planning/execution.
+	if info, ok := extractGrafanaDashboardURLInfo(in.Input); ok {
+		if _, exists := in.Context["grafana_base_url"]; !exists && strings.TrimSpace(info.BaseURL) != "" {
+			in.Context["grafana_base_url"] = info.BaseURL
+		}
+		if _, exists := in.Context["grafana_org_id"]; !exists && info.OrgID > 0 {
+			in.Context["grafana_org_id"] = info.OrgID
+		}
+		if _, exists := in.Context["grafana_dashboard_uid"]; !exists && strings.TrimSpace(info.UID) != "" {
+			in.Context["grafana_dashboard_uid"] = info.UID
+		}
+		if _, exists := in.Context["grafana_dashboard_url"]; !exists && strings.TrimSpace(info.URL) != "" {
+			in.Context["grafana_dashboard_url"] = info.URL
+		}
+	}
+
 	// Provide configured Jira clients (no secrets) to the planner so it can pick the right instance.
 	if clients := jiraPublicClientsFromEnv(); len(clients) > 0 {
 		in.Context["jira_clients"] = clients
@@ -62,6 +86,14 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 	}
 	if def := strings.TrimSpace(os.Getenv("CONFLUENCE_DEFAULT_CLIENT")); def != "" {
 		in.Context["confluence_default_client"] = def
+	}
+
+	// Provide configured Grafana clients (no secrets) to the planner so it can pick the right instance.
+	if clients := grafanaPublicClientsFromEnv(); len(clients) > 0 {
+		in.Context["grafana_clients"] = clients
+	}
+	if def := strings.TrimSpace(os.Getenv("GRAFANA_DEFAULT_CLIENT")); def != "" {
+		in.Context["grafana_default_client"] = def
 	}
 
 	if in.MaxSteps <= 0 {
@@ -92,6 +124,8 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 	h.applyJiraClientToPlan(&plan, in.Context)
 	// Make Confluence instance selection deterministic (do not rely on the model to thread it through).
 	h.applyConfluenceClientToPlan(&plan, in.Context)
+	// Make Grafana instance selection deterministic (do not rely on the model to thread it through).
+	h.applyGrafanaClientToPlan(&plan, in.Context)
 
 	if err := router.ValidatePlan(plan, policy, catalog, in.MaxSteps); err != nil {
 		return errorResult(err.Error() + "\nplan=" + string(rawPlan)), nil
@@ -155,6 +189,28 @@ func extractConfluenceClientPrefix(input string) (client string, rest string) {
 		return "", ""
 	}
 	after := strings.TrimSpace(s[len("confluence "):])
+	if after == "" {
+		return "", ""
+	}
+	parts := strings.Fields(after)
+	if len(parts) == 0 {
+		return "", ""
+	}
+	client = parts[0]
+	rest = strings.TrimSpace(after[len(parts[0]):])
+	return client, rest
+}
+
+func extractGrafanaClientPrefix(input string) (client string, rest string) {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return "", ""
+	}
+	lower := strings.ToLower(s)
+	if !strings.HasPrefix(lower, "grafana ") {
+		return "", ""
+	}
+	after := strings.TrimSpace(s[len("grafana "):])
 	if after == "" {
 		return "", ""
 	}
@@ -235,6 +291,91 @@ func (h *Handler) applyConfluenceClientToPlan(plan *router.ModelPlan, ctx map[st
 			continue
 		}
 		args["client"] = client
+		if b, err := json.Marshal(args); err == nil {
+			plan.Steps[i].Args = b
+		}
+	}
+}
+
+func (h *Handler) applyGrafanaClientToPlan(plan *router.ModelPlan, ctx map[string]any) {
+	if plan == nil || len(plan.Steps) == 0 {
+		return
+	}
+	if ctx == nil {
+		return
+	}
+
+	client, _ := ctx["grafana_client"].(string)
+	client = strings.TrimSpace(client)
+
+	baseURL, _ := ctx["grafana_base_url"].(string)
+	baseURL = strings.TrimSpace(baseURL)
+
+	dashboardUID, _ := ctx["grafana_dashboard_uid"].(string)
+	dashboardUID = strings.TrimSpace(dashboardUID)
+
+	orgID := 0
+	switch v := ctx["grafana_org_id"].(type) {
+	case int:
+		orgID = v
+	case float64:
+		orgID = int(v)
+	}
+
+	if client == "" && baseURL == "" && dashboardUID == "" && orgID == 0 {
+		return
+	}
+
+	for i := range plan.Steps {
+		step := plan.Steps[i]
+		if step.Source != "local" || !strings.HasPrefix(step.Name, "grafana_") {
+			continue
+		}
+
+		var args map[string]any
+		if err := json.Unmarshal(step.Args, &args); err != nil || args == nil {
+			continue
+		}
+
+		// If caller explicitly set base_url, do not override it (but still allow filling uid/org_id/client).
+		baseExplicit := false
+		if base, ok := args["base_url"].(string); ok && strings.TrimSpace(base) != "" {
+			baseExplicit = true
+		}
+
+		if client != "" {
+			if _, ok := args["client"]; !ok {
+				args["client"] = client
+			}
+		}
+
+		if !baseExplicit && baseURL != "" {
+			if base, ok := args["base_url"].(string); !ok || strings.TrimSpace(base) == "" {
+				args["base_url"] = baseURL
+			}
+		}
+
+		if orgID > 0 {
+			switch v := args["org_id"].(type) {
+			case nil:
+				args["org_id"] = orgID
+			case float64:
+				if int(v) == 0 {
+					args["org_id"] = orgID
+				}
+			case int:
+				if v == 0 {
+					args["org_id"] = orgID
+				}
+			}
+		}
+
+		if dashboardUID != "" && (step.Name == "grafana_get_dashboard" || step.Name == "grafana_get_dashboard_summary") {
+			if v, ok := args["uid"].(string); !ok || strings.TrimSpace(v) == "" {
+				args["uid"] = dashboardUID
+			}
+		}
+
 		if b, err := json.Marshal(args); err == nil {
 			plan.Steps[i].Args = b
 		}

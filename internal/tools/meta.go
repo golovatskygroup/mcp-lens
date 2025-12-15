@@ -457,6 +457,216 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 			}`),
 		},
 		{
+			Name:        "grafana_health",
+			Description: "Check Grafana health (read-only). Calls GET /api/health. This can work without auth on some Grafana instances.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL (e.g., https://grafana.company.com). If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_get_current_user",
+			Description: "Get the current Grafana user (read-only). Calls GET /api/user. Use this to validate authentication/permissions.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_search",
+			Description: "Search Grafana folders and dashboards (read-only). Calls GET /api/search with filters and pagination (page/limit).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"query": {"type": "string", "description": "Search query string."},
+					"type": {"type": "string", "description": "Result type filter.", "enum": ["dash-db", "dash-folder"]},
+					"tags": {"type": "array", "items": {"type": "string"}, "description": "Filter by Grafana tags (AND when multiple)."},
+					"folder_uids": {"type": "array", "items": {"type": "string"}, "description": "Only search in these folder UIDs."},
+					"dashboard_uids": {"type": "array", "items": {"type": "string"}, "description": "Only return these dashboard UIDs."},
+					"starred": {"type": "boolean", "description": "Only starred dashboards."},
+					"limit": {"type": "integer", "description": "Page size (default: 100; max server-side depends on Grafana).", "default": 100},
+					"page": {"type": "integer", "description": "Page number (starts at 1).", "default": 1},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_get_dashboard",
+			Description: "Get a Grafana dashboard by UID (read-only). Calls GET /api/dashboards/uid/:uid.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"uid": {"type": "string", "description": "Dashboard UID."},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				},
+				"required": ["uid"]
+			}`),
+		},
+		{
+			Name:        "grafana_get_dashboard_summary",
+			Description: "Get a compact summary of a Grafana dashboard by UID or URL (read-only). Fetches /api/dashboards/uid/:uid and extracts panels/queries/variables to keep output small.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"uid": {"type": "string", "description": "Dashboard UID. Either uid or url is required."},
+					"url": {"type": "string", "description": "Grafana dashboard URL (e.g. https://grafana.example.com/d/<uid>/...). If provided, uid/base_url/org_id can be inferred."},
+					"max_panels": {"type": "integer", "description": "Max panels to include (default: 200).", "default": 200},
+					"max_targets_per_panel": {"type": "integer", "description": "Max targets (queries) per panel to include (default: 20).", "default": 20},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env (or inferred from url)."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header). If omitted, may be inferred from url orgId query param."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_list_folders",
+			Description: "List Grafana folders (read-only). Calls GET /api/folders with pagination (page/limit) and optional parent_uid (nested folders).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"limit": {"type": "integer", "description": "Page size (default: 1000).", "default": 1000},
+					"page": {"type": "integer", "description": "Page number (starts at 1).", "default": 1},
+					"parent_uid": {"type": "string", "description": "Parent folder UID (nested folders)."},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_get_folder",
+			Description: "Get a Grafana folder by UID (read-only). Calls GET /api/folders/:uid.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"uid": {"type": "string", "description": "Folder UID."},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				},
+				"required": ["uid"]
+			}`),
+		},
+		{
+			Name:        "grafana_list_datasources",
+			Description: "List Grafana data sources (read-only). Calls GET /api/datasources.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_get_datasource",
+			Description: "Get a Grafana data source by uid or name (read-only). Calls GET /api/datasources/uid/:uid or GET /api/datasources/name/:name.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"uid": {"type": "string", "description": "Data source UID."},
+					"name": {"type": "string", "description": "Data source name."},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_query_annotations",
+			Description: "Query Grafana annotations (read-only). Calls GET /api/annotations. Supports time range, tags, dashboard_uid, panel_id, and other filters.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"from": {"type": "integer", "description": "Epoch milliseconds from (optional)."},
+					"to": {"type": "integer", "description": "Epoch milliseconds to (optional)."},
+					"limit": {"type": "integer", "description": "Max results (default: 100).", "default": 100},
+					"alert_id": {"type": "integer", "description": "Filter by alert rule ID (deprecated in Grafana; prefer alert_uid)."},
+					"alert_uid": {"type": "string", "description": "Filter by alert rule UID."},
+					"dashboard_uid": {"type": "string", "description": "Filter by dashboard UID."},
+					"panel_id": {"type": "integer", "description": "Filter by panel ID."},
+					"user_id": {"type": "integer", "description": "Filter by user ID."},
+					"type": {"type": "string", "description": "Return alerts or user annotations.", "enum": ["alert", "annotation"]},
+					"tags": {"type": "array", "items": {"type": "string"}, "description": "Filter organization annotations by tags (AND when multiple)."},
+					"match_any": {"type": "boolean", "description": "Match any tag (OR) instead of AND when tags are provided."},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_list_annotation_tags",
+			Description: "List Grafana annotation tags (read-only). Calls GET /api/annotations/tags.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"tag": {"type": "string", "description": "Filter tag prefix/string."},
+					"limit": {"type": "integer", "description": "Max results (default: 100).", "default": 100},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
 			Name:        "router",
 			Description: "(Internal) Planning router used by this proxy. Most MCP clients should call the `query` tool instead. `router` and `query` share the same input/output.",
 			InputSchema: json.RawMessage(`{
@@ -573,6 +783,28 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.confluenceGetPageByTitle(ctx, args)
 	case "confluence_search_cql":
 		return h.confluenceSearchCQL(ctx, args)
+	case "grafana_health":
+		return h.grafanaHealth(ctx, args)
+	case "grafana_get_current_user":
+		return h.grafanaGetCurrentUser(ctx, args)
+	case "grafana_search":
+		return h.grafanaSearch(ctx, args)
+	case "grafana_get_dashboard":
+		return h.grafanaGetDashboard(ctx, args)
+	case "grafana_get_dashboard_summary":
+		return h.grafanaGetDashboardSummary(ctx, args)
+	case "grafana_list_folders":
+		return h.grafanaListFolders(ctx, args)
+	case "grafana_get_folder":
+		return h.grafanaGetFolder(ctx, args)
+	case "grafana_list_datasources":
+		return h.grafanaListDatasources(ctx, args)
+	case "grafana_get_datasource":
+		return h.grafanaGetDatasource(ctx, args)
+	case "grafana_query_annotations":
+		return h.grafanaQueryAnnotations(ctx, args)
+	case "grafana_list_annotation_tags":
+		return h.grafanaListAnnotationTags(ctx, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -588,7 +820,8 @@ func (h *Handler) IsLocalTool(name string) bool {
 		"get_pull_request_details", "list_pull_request_files", "get_pull_request_diff", "get_pull_request_summary", "get_pull_request_file_diff", "get_file_at_ref", "prepare_pull_request_review_bundle", "list_pull_request_commits", "get_pull_request_checks", "fetch_complete_pr_diff", "fetch_complete_pr_files",
 		"jira_get_myself", "jira_get_issue", "jira_search_issues", "jira_get_issue_comments", "jira_get_issue_transitions", "jira_list_projects",
 		"jira_add_comment", "jira_transition_issue", "jira_create_issue", "jira_update_issue", "jira_add_attachment",
-		"confluence_list_spaces", "confluence_get_page", "confluence_get_page_by_title", "confluence_search_cql":
+		"confluence_list_spaces", "confluence_get_page", "confluence_get_page_by_title", "confluence_search_cql",
+		"grafana_health", "grafana_get_current_user", "grafana_search", "grafana_get_dashboard", "grafana_get_dashboard_summary", "grafana_list_folders", "grafana_get_folder", "grafana_list_datasources", "grafana_get_datasource", "grafana_query_annotations", "grafana_list_annotation_tags":
 		return true
 	default:
 		return false
@@ -692,6 +925,9 @@ func expandQuery(q string) []string {
 	if strings.Contains(q, "confluence") || strings.Contains(q, "wiki") || strings.Contains(q, "cql") || strings.Contains(q, "space") || strings.Contains(q, "page") {
 		add("confluence", "wiki", "cql", "search", "space", "page", "content", "title")
 	}
+	if strings.Contains(q, "grafana") || strings.Contains(q, "dashboard") || strings.Contains(q, "datasource") || strings.Contains(q, "folder") || strings.Contains(q, "annotation") {
+		add("grafana", "dashboard", "dashboards", "folder", "folders", "search", "datasource", "data source", "annotations")
+	}
 
 	// Dedupe
 	seen := map[string]struct{}{}
@@ -745,6 +981,17 @@ func searchLocalTools(query string, category string, limit int) []mcp.ToolSummar
 		{Name: "confluence_get_page", Category: "local", Description: "Get Confluence page by id (v2 storage preferred; v1 fallback)."},
 		{Name: "confluence_get_page_by_title", Category: "local", Description: "Find Confluence page by space_key + title."},
 		{Name: "confluence_search_cql", Category: "local", Description: "Search Confluence using CQL with pagination."},
+		{Name: "grafana_health", Category: "local", Description: "Grafana health check (/api/health)."},
+		{Name: "grafana_get_current_user", Category: "local", Description: "Current Grafana user (/api/user) to validate auth."},
+		{Name: "grafana_search", Category: "local", Description: "Search Grafana folders/dashboards (/api/search) with pagination."},
+		{Name: "grafana_get_dashboard", Category: "local", Description: "Get Grafana dashboard by uid (/api/dashboards/uid/:uid)."},
+		{Name: "grafana_get_dashboard_summary", Category: "local", Description: "Compact dashboard summary (panels/queries/variables) by uid or URL."},
+		{Name: "grafana_list_folders", Category: "local", Description: "List Grafana folders (/api/folders) with pagination."},
+		{Name: "grafana_get_folder", Category: "local", Description: "Get Grafana folder by uid (/api/folders/:uid)."},
+		{Name: "grafana_list_datasources", Category: "local", Description: "List Grafana datasources (/api/datasources)."},
+		{Name: "grafana_get_datasource", Category: "local", Description: "Get Grafana datasource by uid or name."},
+		{Name: "grafana_query_annotations", Category: "local", Description: "Query Grafana annotations (/api/annotations)."},
+		{Name: "grafana_list_annotation_tags", Category: "local", Description: "List Grafana annotation tags (/api/annotations/tags)."},
 	}
 
 	// Basic scoring.

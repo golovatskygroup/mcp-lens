@@ -40,6 +40,16 @@ func BuildPlanUserPrompt(userInput string, ctx map[string]any, catalog []ToolCat
 				"If context.confluence_client is set (from `confluence <client>` prefix), always set args.client for all confluence_* tool calls, unless args.base_url is explicitly set.",
 				"Available Confluence client aliases (if configured) are in context.confluence_clients; default alias (if set) is context.confluence_default_client.",
 			},
+			"grafana_workflow": []string{
+				"For Grafana tasks, start with grafana_search to find dashboards/folders by query/tags, then use grafana_get_dashboard or grafana_get_folder for details.",
+				"For dashboard reviews/analysis, prefer grafana_get_dashboard_summary (smaller output with panels/queries/variables) over grafana_get_dashboard (full JSON).",
+				"If the user provides a Grafana dashboard URL like https://<host>/d/<uid>/..., extract uid and pass it; also infer base_url (scheme+host) and org_id (from orgId query param) when possible.",
+				"Use grafana_get_current_user to validate authentication and permissions.",
+				"Use grafana_list_datasources and grafana_get_datasource to discover data source metadata.",
+				"For annotations, use grafana_query_annotations and optionally grafana_list_annotation_tags.",
+				"If context.grafana_client is set (from `grafana <client>` prefix), always set args.client for all grafana_* tool calls, unless args.base_url is explicitly set.",
+				"Available Grafana client aliases (if configured) are in context.grafana_clients; default alias (if set) is context.grafana_default_client.",
+			},
 			"pagination":  "Auto-pagination is enabled. If a tool returns has_next=true, the system will automatically fetch the next page/chunk.",
 			"file_output": "Tools like fetch_complete_pr_diff save results to files and return file paths. The LLM client can then read these files.",
 		},
@@ -75,7 +85,7 @@ func BuildPlanUserPrompt(userInput string, ctx map[string]any, catalog []ToolCat
 }
 
 func BuildSummarizeSystemPrompt() string {
-	return "You summarize tool results for a human. Be concise and accurate."
+	return "You summarize tool results for a human. Be concise and accurate. Return plain text (no JSON, no markdown code fences)."
 }
 
 func BuildSummarizeUserPrompt(userInput string, res RouterResult) (string, error) {

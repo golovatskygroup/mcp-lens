@@ -30,6 +30,17 @@ func DefaultPolicy() Policy {
 		"confluence_get_page":                {},
 		"confluence_get_page_by_title":       {},
 		"confluence_search_cql":              {},
+		"grafana_health":                     {},
+		"grafana_get_current_user":           {},
+		"grafana_search":                     {},
+		"grafana_get_dashboard":              {},
+		"grafana_get_dashboard_summary":      {},
+		"grafana_list_folders":               {},
+		"grafana_get_folder":                 {},
+		"grafana_list_datasources":           {},
+		"grafana_get_datasource":             {},
+		"grafana_query_annotations":          {},
+		"grafana_list_annotation_tags":       {},
 	}
 
 	// Start conservative: empty upstream allowlist.

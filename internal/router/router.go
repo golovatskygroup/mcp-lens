@@ -67,10 +67,9 @@ func Summarize(ctx context.Context, cl *OpenRouterClient, userInput string, res 
 	if err != nil {
 		return "", err
 	}
-	raw, err := cl.ChatCompletionJSON(ctx, system, user)
+	raw, err := cl.ChatCompletionText(ctx, system, user)
 	if err != nil {
 		return "", err
 	}
-	// For summarize we allow plain text; ChatCompletionJSON returns content trimmed and JSON-extracted.
-	return string(raw), nil
+	return raw, nil
 }

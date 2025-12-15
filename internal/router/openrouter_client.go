@@ -48,8 +48,7 @@ func NewOpenRouterClientFromEnv() (*OpenRouterClient, error) {
 	}, nil
 }
 
-// ChatCompletionJSON asks the model to return strict JSON in the assistant content.
-func (cl *OpenRouterClient) ChatCompletionJSON(ctx context.Context, system string, user string) ([]byte, error) {
+func (cl *OpenRouterClient) chatCompletion(ctx context.Context, system string, user string) (string, error) {
 	type msg struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
@@ -66,12 +65,12 @@ func (cl *OpenRouterClient) ChatCompletionJSON(ctx context.Context, system strin
 
 	b, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cl.baseURL, "/")+"/chat/completions", bytes.NewReader(b))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+cl.apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -81,16 +80,16 @@ func (cl *OpenRouterClient) ChatCompletionJSON(ctx context.Context, system strin
 
 	resp, err := cl.c.Do(req)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openrouter error (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return "", fmt.Errorf("openrouter error (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var parsed struct {
@@ -101,23 +100,49 @@ func (cl *OpenRouterClient) ChatCompletionJSON(ctx context.Context, system strin
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, err
+		return "", err
 	}
 	if len(parsed.Choices) == 0 {
-		return nil, errors.New("openrouter: empty choices")
+		return "", errors.New("openrouter: empty choices")
 	}
 
 	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
 	if content == "" {
-		return nil, errors.New("openrouter: empty message content")
+		return "", errors.New("openrouter: empty message content")
+	}
+	return content, nil
+}
+
+// ChatCompletionJSON asks the model to return strict JSON in the assistant content.
+func (cl *OpenRouterClient) ChatCompletionJSON(ctx context.Context, system string, user string) ([]byte, error) {
+	content, err := cl.chatCompletion(ctx, system, user)
+	if err != nil {
+		return nil, err
 	}
 
-	// The model should return pure JSON. We still defensively try to extract the first JSON object.
-	start := strings.Index(content, "{")
-	end := strings.LastIndex(content, "}")
+	// The model should return pure JSON. We still defensively try to extract a JSON object/array
+	// from the assistant content (handles occasional leading/trailing prose or markdown fences).
+	startObj := strings.Index(content, "{")
+	startArr := strings.Index(content, "[")
+	start := startObj
+	if start < 0 || (startArr >= 0 && startArr < start) {
+		start = startArr
+	}
+
+	var end int
+	if start == startArr {
+		end = strings.LastIndex(content, "]")
+	} else {
+		end = strings.LastIndex(content, "}")
+	}
 	if start >= 0 && end > start {
 		content = content[start : end+1]
 	}
 
-	return []byte(content), nil
+	return []byte(strings.TrimSpace(content)), nil
+}
+
+// ChatCompletionText returns assistant content as plain text (no JSON extraction).
+func (cl *OpenRouterClient) ChatCompletionText(ctx context.Context, system string, user string) (string, error) {
+	return cl.chatCompletion(ctx, system, user)
 }

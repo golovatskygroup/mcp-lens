@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -272,7 +271,7 @@ func TestParseNextPage(t *testing.T) {
 
 func TestGitHubAuthHint(t *testing.T) {
 	tests := []struct {
-		status     int
+		status       int
 		wantNonEmpty bool
 	}{
 		{401, true},
@@ -291,39 +290,6 @@ func TestGitHubAuthHint(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Integration test with mock server
-func TestGetPullRequestDetailsWithMock(t *testing.T) {
-	// Create mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-RateLimit-Remaining", "4998")
-		w.Header().Set("X-RateLimit-Reset", "1700000000")
-
-		response := map[string]any{
-			"number": 123,
-			"title":  "Test PR",
-			"state":  "open",
-			"draft":  false,
-			"user": map[string]any{
-				"login": "testuser",
-			},
-			"base": map[string]any{
-				"ref": "main",
-			},
-			"head": map[string]any{
-				"ref": "feature",
-				"sha": "abc123",
-			},
-		}
-		json.NewEncoder(w).Encode(response)
-	}))
-	defer server.Close()
-
-	// We can't easily test with the mock server since githubClient uses api.github.com
-	// This test mainly validates the response structure parsing
-	t.Log("Mock server created at:", server.URL)
 }
 
 func TestNewToolsExist(t *testing.T) {

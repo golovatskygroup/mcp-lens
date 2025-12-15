@@ -56,7 +56,12 @@ claude mcp add --transport stdio mcp-lens \
         "JIRA_PAT": "${JIRA_PAT}",
         "CONFLUENCE_BASE_URL": "${CONFLUENCE_BASE_URL}",
         "CONFLUENCE_EMAIL": "${CONFLUENCE_EMAIL}",
-        "CONFLUENCE_API_TOKEN": "${CONFLUENCE_API_TOKEN}"
+        "CONFLUENCE_API_TOKEN": "${CONFLUENCE_API_TOKEN}",
+        "GRAFANA_BASE_URL": "${GRAFANA_BASE_URL}",
+        "GRAFANA_API_TOKEN": "${GRAFANA_API_TOKEN}",
+        "GRAFANA_CF_ACCESS_CLIENT_ID": "${GRAFANA_CF_ACCESS_CLIENT_ID}",
+        "GRAFANA_CF_ACCESS_CLIENT_SECRET": "${GRAFANA_CF_ACCESS_CLIENT_SECRET}",
+        "GRAFANA_ORG_ID": "${GRAFANA_ORG_ID}"
       }
     }
   }
@@ -96,6 +101,18 @@ claude mcp add --transport stdio mcp-lens \
   - Env: `CONFLUENCE_CLIENTS_JSON` + optional `CONFLUENCE_DEFAULT_CLIENT`
   - Lets you target a specific Confluence instance by prefixing your request: `confluence <client> ...`
 
+- **Grafana local tools**
+  - Env: `GRAFANA_BASE_URL` + one auth method:
+    - Token (recommended): `GRAFANA_API_TOKEN` (or `GRAFANA_BEARER_TOKEN`)
+    - Basic (if enabled): `GRAFANA_USERNAME` + `GRAFANA_PASSWORD`
+  - If Grafana is behind Cloudflare Access: `GRAFANA_CF_ACCESS_CLIENT_ID` + `GRAFANA_CF_ACCESS_CLIENT_SECRET` (or `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET`)
+  - Optional: `GRAFANA_ORG_ID` (adds `X-Grafana-Org-Id`)
+  - Enables router to execute Grafana read-only calls (dashboards/folders/search/datasources/annotations)
+
+- **Multi-Grafana routing**
+  - Env: `GRAFANA_CLIENTS_JSON` + optional `GRAFANA_DEFAULT_CLIENT`
+  - Lets you target a specific Grafana instance by prefixing your request: `grafana <client> ...`
+
 - **Upstream MCP server selection**
   - Env: `MCP_LENS_PRESET` (e.g. `github`) or `MCP_LENS_UPSTREAM_*`
   - Changes which upstream MCP server is launched (and therefore which upstream tools exist)
@@ -108,6 +125,7 @@ claude mcp add --transport stdio mcp-lens \
 - **Upstream-agnostic**: runs any upstream MCP server as a child process (default: GitHub MCP)
 - **Jira support included**: read-only Jira calls when auth is configured
 - **Confluence support included**: read-only Confluence calls when auth is configured
+- **Grafana support included**: read-only Grafana calls when auth is configured
 
 ## How it works (technically)
 
