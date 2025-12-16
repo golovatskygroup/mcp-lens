@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golovatskygroup/mcp-lens/internal/httpcache"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
@@ -23,7 +24,7 @@ type githubClient struct {
 	c     *http.Client
 
 	// Rate limit tracking
-	mu             sync.RWMutex
+	mu                 sync.RWMutex
 	rateLimitRemaining int
 	rateLimitReset     time.Time
 }
@@ -42,8 +43,11 @@ func newGitHubClient() *githubClient {
 		}
 
 		ghClient = &githubClient{
-			token:              tok,
-			c:                  http.DefaultClient,
+			token: tok,
+			c: &http.Client{
+				Timeout:   30 * time.Second,
+				Transport: httpcache.NewTransportFromEnv(nil),
+			},
 			rateLimitRemaining: -1, // Unknown
 		}
 	})
@@ -218,17 +222,17 @@ type prChecksInput struct {
 }
 
 type prReviewBundleInput struct {
-	Repo         string `json:"repo"`
-	Number       int    `json:"number"`
-	FilesPage    int    `json:"files_page,omitempty"`
-	FilesPerPage int    `json:"files_per_page,omitempty"`
-	IncludeDiff  bool   `json:"include_diff,omitempty"`
-	DiffOffset   int    `json:"diff_offset,omitempty"`
-	MaxDiffBytes int    `json:"max_diff_bytes,omitempty"`
-	IncludeCommits bool `json:"include_commits,omitempty"`
-	CommitsPage  int    `json:"commits_page,omitempty"`
-	CommitsPerPage int `json:"commits_per_page,omitempty"`
-	IncludeChecks bool `json:"include_checks,omitempty"`
+	Repo           string `json:"repo"`
+	Number         int    `json:"number"`
+	FilesPage      int    `json:"files_page,omitempty"`
+	FilesPerPage   int    `json:"files_per_page,omitempty"`
+	IncludeDiff    bool   `json:"include_diff,omitempty"`
+	DiffOffset     int    `json:"diff_offset,omitempty"`
+	MaxDiffBytes   int    `json:"max_diff_bytes,omitempty"`
+	IncludeCommits bool   `json:"include_commits,omitempty"`
+	CommitsPage    int    `json:"commits_page,omitempty"`
+	CommitsPerPage int    `json:"commits_per_page,omitempty"`
+	IncludeChecks  bool   `json:"include_checks,omitempty"`
 }
 
 type fetchCompletePRDiffInput struct {
@@ -371,14 +375,14 @@ func (h *Handler) listPullRequestFiles(ctx context.Context, args json.RawMessage
 	compactFiles := make([]map[string]any, 0, len(files))
 	for _, f := range files {
 		compactFiles = append(compactFiles, map[string]any{
-			"filename":    f["filename"],
-			"status":      f["status"],
-			"additions":   f["additions"],
-			"deletions":   f["deletions"],
-			"changes":     f["changes"],
-			"patch":       f["patch"], // Keep patch for review context
-			"raw_url":     f["raw_url"],
-			"blob_url":    f["blob_url"],
+			"filename":     f["filename"],
+			"status":       f["status"],
+			"additions":    f["additions"],
+			"deletions":    f["deletions"],
+			"changes":      f["changes"],
+			"patch":        f["patch"], // Keep patch for review context
+			"raw_url":      f["raw_url"],
+			"blob_url":     f["blob_url"],
 			"contents_url": f["contents_url"],
 		})
 	}

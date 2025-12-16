@@ -18,6 +18,12 @@ func TestPolicyBlocksMutations(t *testing.T) {
 
 func TestPolicyAllowsKnownLocalReadOnly(t *testing.T) {
 	p := DefaultPolicy()
+	if !p.IsAllowed("local", "search_tools") {
+		t.Fatalf("expected search_tools allowed")
+	}
+	if !p.IsAllowed("local", "describe_tool") {
+		t.Fatalf("expected describe_tool allowed")
+	}
 	if !p.IsAllowed("local", "get_pull_request_details") {
 		t.Fatalf("expected local tool allowed")
 	}
@@ -30,8 +36,24 @@ func TestPolicyAllowsNewLocalTools(t *testing.T) {
 	p := DefaultPolicy()
 
 	newTools := []string{
+		"artifact_save_text",
+		"artifact_append_text",
+		"artifact_list",
+		"artifact_search",
 		"get_pull_request_summary",
 		"get_pull_request_file_diff",
+		"github_list_workflow_runs",
+		"github_list_workflow_jobs",
+		"github_download_job_logs",
+		"jira_get_issue_bundle",
+		"jira_export_tasks",
+		"confluence_get_page_children",
+		"confluence_list_page_attachments",
+		"confluence_download_attachment",
+		"grafana_list_alerts",
+		"grafana_get_alert",
+		"grafana_list_alert_rules",
+		"grafana_get_alert_rule",
 	}
 
 	for _, tool := range newTools {
@@ -60,5 +82,19 @@ func TestPolicyAllowsAllPRTools(t *testing.T) {
 		if !p.IsAllowed("local", tool) {
 			t.Errorf("expected PR tool %s to be allowed", tool)
 		}
+	}
+}
+
+func TestPolicyDevScaffoldToolRequiresDevMode(t *testing.T) {
+	t.Setenv("MCP_LENS_DEV_MODE", "")
+	p := DefaultPolicy()
+	if p.IsAllowed("local", "dev_scaffold_tool") {
+		t.Fatalf("expected dev_scaffold_tool blocked when dev mode off")
+	}
+
+	t.Setenv("MCP_LENS_DEV_MODE", "1")
+	p2 := DefaultPolicy()
+	if !p2.IsAllowed("local", "dev_scaffold_tool") {
+		t.Fatalf("expected dev_scaffold_tool allowed when dev mode on")
 	}
 }

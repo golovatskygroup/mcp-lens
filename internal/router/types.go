@@ -1,6 +1,10 @@
 package router
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/golovatskygroup/mcp-lens/internal/artifacts"
+)
 
 type ToolCatalogItem struct {
 	Name        string          `json:"name"`
@@ -11,10 +15,11 @@ type ToolCatalogItem struct {
 }
 
 type PlanStep struct {
-	Name   string          `json:"name"`
-	Source string          `json:"source"` // local|upstream
-	Args   json.RawMessage `json:"args"`
-	Reason string          `json:"reason,omitempty"`
+	Name          string          `json:"name"`
+	Source        string          `json:"source"` // local|upstream
+	Args          json.RawMessage `json:"args"`
+	Reason        string          `json:"reason,omitempty"`
+	ParallelGroup string          `json:"parallel_group,omitempty"`
 }
 
 type ModelPlan struct {
@@ -32,8 +37,9 @@ type ExecutedStep struct {
 }
 
 type RouterResult struct {
-	Plan          ModelPlan      `json:"plan"`
-	ExecutedSteps []ExecutedStep `json:"executed_steps,omitempty"`
-	Answer        string         `json:"answer,omitempty"`
-	Debug         any            `json:"debug,omitempty"`
+	Plan          ModelPlan           `json:"plan"`
+	ExecutedSteps []ExecutedStep      `json:"executed_steps,omitempty"`
+	Answer        string              `json:"answer,omitempty"`
+	Manifest      *artifacts.Manifest `json:"manifest,omitempty"`
+	Debug         any                 `json:"debug,omitempty"`
 }

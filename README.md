@@ -72,7 +72,8 @@ claude mcp add --transport stdio mcp-lens \
 
 - **Router / `query` tool**
   - Requires: `OPENROUTER_API_KEY` + `MCP_LENS_ROUTER_MODEL`
-  - Optional tuning: `MCP_LENS_ROUTER_BASE_URL`, `MCP_LENS_ROUTER_TIMEOUT_MS`
+  - Optional tuning: `MCP_LENS_ROUTER_BASE_URL`, `MCP_LENS_ROUTER_TIMEOUT_MS`, `MCP_LENS_ROUTER_MAX_TOKENS_PLAN`, `MCP_LENS_ROUTER_MAX_TOKENS_SUMMARY`
+  - Optional output shaping: pass `output` in `query` args (view/include_fields/exclude_fields/max_items/max_depth/redact)
 
 - **GitHub local helpers (PR review / diffs / files / commits / checks)**
   - Env: `GITHUB_TOKEN` (preferred) or `GITHUB_PERSONAL_ACCESS_TOKEN` (fallback)
@@ -117,11 +118,24 @@ claude mcp add --transport stdio mcp-lens \
   - Env: `MCP_LENS_PRESET` (e.g. `github`) or `MCP_LENS_UPSTREAM_*`
   - Changes which upstream MCP server is launched (and therefore which upstream tools exist)
 
+- **HTTP cache (optional, local tools only)**
+  - Env: `MCP_LENS_HTTP_CACHE_ENABLED=1`, `MCP_LENS_HTTP_CACHE_TTL_SECONDS`, `MCP_LENS_HTTP_CACHE_MAX_ENTRIES`
+  - Caches GET requests (ETag/If-None-Match + TTL) separately per auth headers
+
+- **Artifacts (optional)**
+  - Env: `MCP_LENS_ARTIFACT_DIR`, `MCP_LENS_ARTIFACT_INLINE_MAX_BYTES`, `MCP_LENS_ARTIFACT_PREVIEW_BYTES`
+  - Large tool results are stored to disk and returned as `artifact://...` references (also exposed via `resources/list` + `resources/read`)
+
+- **Dev mode (opt-in)**
+  - Env: `MCP_LENS_DEV_MODE=1`
+  - Enables `dev_scaffold_tool` (planner-driven patch + isolated git worktree generator for new local tools; requires git)
+
 ## Features
 
 - **One tool for users**: clients see only `query` via `tools/list`
 - **Safer by default**: strict **read-only policy** (mutations blocked)
 - **Works with big PRs**: chunked diffs + auto-pagination helpers
+- **Executor mode**: provide explicit `steps[]` to validate + execute without planning/LLM
 - **Upstream-agnostic**: runs any upstream MCP server as a child process (default: GitHub MCP)
 - **Jira support included**: read-only Jira calls when auth is configured
 - **Confluence support included**: read-only Confluence calls when auth is configured
@@ -136,3 +150,38 @@ claude mcp add --transport stdio mcp-lens \
   - validates plan against policy (read-only, allowlist, args must be JSON objects)
   - executes steps locally (helpers) or upstream (if policy allows)
   - optionally summarizes results (`include_answer=true`)
+
+## Codex-friendly workflow
+
+### 1) Plan-only
+
+Use `dry_run=true` to get the tool plan without executing:
+
+```json
+{"input":"Review PR https://github.com/org/repo/pull/123","dry_run":true,"format":"json"}
+```
+
+### 2) Executor mode (bring-your-own-plan)
+
+Provide `mode=executor` + `steps[]` to validate + execute without calling OpenRouter:
+
+```json
+{
+  "input": "execute explicit steps",
+  "mode": "executor",
+  "steps": [
+    {"name":"get_pull_request_summary","source":"local","args":{"repo":"org/repo","number":123}},
+    {"name":"fetch_complete_pr_diff","source":"local","args":{"repo":"org/repo","number":123}}
+  ],
+  "include_answer": true
+}
+```
+
+Optional: set `parallelism>1` and a shared `parallel_group` on steps to run them concurrently (local-only).
+
+### 3) CI failure loop (GitHub Actions)
+
+Typical flow:
+- `github_list_workflow_runs` → find run id for a SHA/branch
+- `github_list_workflow_jobs` → find failed job id
+- `github_download_job_logs` → saves logs as artifact (`artifact://...`)

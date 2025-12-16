@@ -14,4 +14,4 @@ dist/
 *.tsbuildinfo
 # Note: keep package-lock.json committed for CI (npm ci)
 # (do not ignore)
-bin/*
+bin/*.worktrees/

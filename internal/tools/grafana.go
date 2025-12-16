@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golovatskygroup/mcp-lens/internal/httpcache"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
@@ -248,7 +249,8 @@ func newGrafanaClient(clientName string, baseOverride string, orgIDOverride int,
 		cfClientID: cfClientID,
 		cfSecret:   cfClientSecret,
 		c: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: httpcache.NewTransportFromEnv(nil),
 		},
 	}, nil
 }

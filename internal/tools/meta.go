@@ -6,27 +6,40 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/golovatskygroup/mcp-lens/internal/artifacts"
 	"github.com/golovatskygroup/mcp-lens/internal/registry"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
 // Handler processes local tool calls (meta-tools + proxy-provided tools).
 type Handler struct {
-	registry *registry.Registry
-	executor func(name string, args json.RawMessage) (*mcp.CallToolResult, error)
+	registry  *registry.Registry
+	executor  func(name string, args json.RawMessage) (*mcp.CallToolResult, error)
+	artifacts *artifacts.Store
+	execDeps  *ExecutionDependencies
 }
 
 // NewHandler creates a new tool handler.
 func NewHandler(reg *registry.Registry, executor func(string, json.RawMessage) (*mcp.CallToolResult, error)) *Handler {
-	return &Handler{registry: reg, executor: executor}
+	st, _ := artifacts.NewFromEnv()
+	return &Handler{registry: reg, executor: executor, artifacts: st}
+}
+
+func (h *Handler) ArtifactStore() *artifacts.Store {
+	return h.artifacts
+}
+
+// SetExecutionDependencies configures the code execution dependencies (Docker, native executor, tool registry, discovery).
+func (h *Handler) SetExecutionDependencies(deps *ExecutionDependencies) {
+	h.execDeps = deps
 }
 
 // BuiltinTools returns local tools provided by the proxy.
 func (h *Handler) BuiltinTools() []mcp.Tool {
-	return []mcp.Tool{
+	tools := []mcp.Tool{
 		{
 			Name:        "search_tools",
-			Description: "Search available GitHub tools by keyword or category. By default returns text; set format=json for machine-readable output.",
+			Description: "Search available tools by keyword or category (local + upstream). By default returns text; set format=json for machine-readable output.",
 			InputSchema: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -60,6 +73,79 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 					"params": {"type": "object", "description": "Tool-specific parameters (see describe_tool for schema)"}
 				},
 				"required": ["name", "params"]
+			}`),
+		},
+		{
+			Name:        "dev_scaffold_tool",
+			Description: "(Dev mode) Generate a patch + isolated git worktree implementing a new local tool (handler + wiring). Requires MCP_LENS_DEV_MODE=1.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"tool_name": {"type": "string", "description": "New local tool name (snake_case)"},
+					"tool_description": {"type": "string", "description": "Short human description"},
+					"input_schema": {"type": "object", "description": "JSON Schema for the tool arguments"},
+					"spec": {"type": "string", "description": "Optional implementation notes / requirements (used for best-effort code generation)"},
+					"handler_method": {"type": "string", "description": "Optional Go method name (default derived from tool_name)"},
+					"domain": {"type": "string", "description": "Domain hint: jira|confluence|grafana|github|other (default derived from tool_name prefix)"},
+					"target_dir": {"type": "string", "description": "Where to write the patch inside the worktree (default: tasks/scaffolds)"},
+					"use_worktree": {"type": "boolean", "description": "Create a new git worktree and apply the patch there (default: true)", "default": true},
+					"worktree_root": {"type": "string", "description": "Worktree root relative to repo (default: .worktrees)"},
+					"worktree_name": {"type": "string", "description": "Worktree directory name (default: dev-<tool>-<ts>)"},
+					"run_gofmt": {"type": "boolean", "description": "Run gofmt in the worktree before producing patch (default: true)", "default": true},
+					"run_tests": {"type": "boolean", "description": "Run go test ./... in the worktree after applying patch (default: false)", "default": false},
+					"allow_in_policy": {"type": "boolean", "description": "Also add the new tool to internal/router/policy.go allowlist", "default": false},
+					"add_to_search": {"type": "boolean", "description": "Also add the new tool to searchLocalTools() for discoverability", "default": true},
+					"add_prompt_hint": {"type": "boolean", "description": "Also add a hint to internal/router/prompt.go (planner guidance)", "default": false}
+				},
+				"required": ["tool_name", "tool_description", "input_schema"]
+			}`),
+		},
+		{
+			Name:        "artifact_save_text",
+			Description: "Save text as an artifact (local). Useful for storing plans/notes between sessions. Returns artifact:// reference.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"name": {"type": "string", "description": "Optional name/title used for artifact filename"},
+					"text": {"type": "string", "description": "Text content to save"},
+					"mime": {"type": "string", "description": "MIME type (default: text/markdown)"}
+				},
+				"required": ["text"]
+			}`),
+		},
+		{
+			Name:        "artifact_append_text",
+			Description: "Append text to an existing artifact by id/uri (creates a new artifact).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"artifact_id": {"type": "string", "description": "Existing artifact id"},
+					"artifact_uri": {"type": "string", "description": "Existing artifact uri (artifact://...)"},
+					"text": {"type": "string", "description": "Text to append"}
+				},
+				"required": ["text"]
+			}`),
+		},
+		{
+			Name:        "artifact_list",
+			Description: "List recently created artifacts in this server process.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"limit": {"type": "integer", "description": "Max items to return (default: all in-memory)"}
+				}
+			}`),
+		},
+		{
+			Name:        "artifact_search",
+			Description: "Search recently created artifacts by substring match over id/path/mime/tool.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"query": {"type": "string", "description": "Search query"},
+					"limit": {"type": "integer", "description": "Max matches (default: 20, max: 200)", "default": 20, "maximum": 200}
+				},
+				"required": ["query"]
 			}`),
 		},
 		{
@@ -168,6 +254,49 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 			}`),
 		},
 		{
+			Name:        "github_list_workflow_runs",
+			Description: "List GitHub Actions workflow runs for a repository (read-only). Useful for debugging CI failures.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"repo": {"type": "string", "description": "Repository in owner/name form"},
+					"branch": {"type": "string", "description": "Filter by branch name"},
+					"event": {"type": "string", "description": "Filter by event (e.g., push, pull_request)"},
+					"status": {"type": "string", "description": "Filter by status (e.g., completed, in_progress, queued)"},
+					"head_sha": {"type": "string", "description": "Filter by head SHA (useful for PR head)"},
+					"page": {"type": "integer", "description": "Page number (default: 1)", "default": 1},
+					"per_page": {"type": "integer", "description": "Items per page (default: 20, max: 100)", "default": 20, "maximum": 100}
+				},
+				"required": ["repo"]
+			}`),
+		},
+		{
+			Name:        "github_list_workflow_jobs",
+			Description: "List GitHub Actions jobs for a workflow run (read-only). Use with github_list_workflow_runs.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"repo": {"type": "string", "description": "Repository in owner/name form"},
+					"run_id": {"type": "integer", "description": "Workflow run id"},
+					"page": {"type": "integer", "description": "Page number (default: 1)", "default": 1},
+					"per_page": {"type": "integer", "description": "Items per page (default: 50, max: 100)", "default": 50, "maximum": 100}
+				},
+				"required": ["repo", "run_id"]
+			}`),
+		},
+		{
+			Name:        "github_download_job_logs",
+			Description: "Download GitHub Actions job logs (read-only) and store them as an artifact (text/plain).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"repo": {"type": "string", "description": "Repository in owner/name form"},
+					"job_id": {"type": "integer", "description": "Workflow job id"}
+				},
+				"required": ["repo", "job_id"]
+			}`),
+		},
+		{
 			Name:        "prepare_pull_request_review_bundle",
 			Description: "Prepare a review bundle: PR details + file list; optionally include diff chunk (~4000 tokens default), commits, and checks.",
 			InputSchema: json.RawMessage(`{
@@ -244,6 +373,27 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 			}`),
 		},
 		{
+			Name:        "jira_get_issue_bundle",
+			Description: "Get a Jira issue plus optional comments and changelog (read-only). Use this to turn a ticket into an implementation plan quickly.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"issue": {"type": "string", "description": "Issue key or id (e.g., PROJ-123)"},
+					"fields": {"type": "array", "items": {"type": "string"}, "description": "Optional list of issue fields to return."},
+					"expand": {"type": "array", "items": {"type": "string"}, "description": "Optional expand directives for issue details."},
+					"include_changelog": {"type": "boolean", "description": "Whether to include changelog via expand=changelog (can be large).", "default": false},
+					"include_comments": {"type": "boolean", "description": "Whether to include issue comments.", "default": true},
+					"comments_startAt": {"type": "integer", "description": "Comments pagination offset (default: 0).", "default": 0},
+					"comments_maxResults": {"type": "integer", "description": "Comments page size (default: 50). Set 0 to skip comments.", "default": 50},
+					"comments_expand": {"type": "string", "description": "Optional comments expand directive (e.g., \"renderedBody\")."},
+					"client": {"type": "string", "description": "Jira client alias (key in JIRA_CLIENTS_JSON). If omitted, uses JIRA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"api_version": {"type": "integer", "description": "REST API version (2 or 3). Default depends on base URL.", "enum": [2,3]}
+				},
+				"required": ["issue"]
+			}`),
+		},
+		{
 			Name:        "jira_search_issues",
 			Description: "Search Jira issues using JQL (read-only) with pagination (startAt/maxResults). Supports fields/expand and optional base_url/api_version override.",
 			InputSchema: json.RawMessage(`{
@@ -309,6 +459,26 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
 					"api_version": {"type": "integer", "description": "REST API version (2 or 3). Default: 2", "enum": [2,3], "default": 2}
 				}
+			}`),
+		},
+		{
+			Name:        "jira_export_tasks",
+			Description: "Export Jira issues found by JQL to local markdown files, and (optionally) expand known links in descriptions (e.g. Confluence pages). Read-only for remote systems; writes files locally.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"jql": {"type": "string", "description": "JQL query to select issues"},
+					"output_dir": {"type": "string", "description": "Directory to write markdown/html exports (default: tasks/jira-export)"},
+					"max_issues": {"type": "integer", "description": "Max issues to export (default: 50, max: 200)", "default": 50},
+					"fields": {"type": "array", "items": {"type": "string"}, "description": "Jira fields to request (default includes summary/status/description)"},
+					"expand": {"type": "array", "items": {"type": "string"}, "description": "Jira expand parameters"},
+					"client": {"type": "string", "description": "Jira client alias (key in JIRA_CLIENTS_JSON). If omitted, uses JIRA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override Jira base URL (if omitted, uses env/client config)"},
+					"api_version": {"type": "integer", "description": "Override Jira REST API version (2 or 3)", "enum": [2,3]},
+					"include_confluence": {"type": "boolean", "description": "Whether to expand Confluence links found in descriptions (default: true)", "default": true},
+					"confluence_base_url": {"type": "string", "description": "Override Confluence base URL for link expansion (if omitted, uses env/client config)"}
+				},
+				"required": ["jql"]
 			}`),
 		},
 		{
@@ -454,6 +624,65 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."}
 				},
 				"required": ["cql"]
+			}`),
+		},
+		{
+			Name:        "confluence_get_page_children",
+			Description: "List child pages for a Confluence page id (read-only). Uses v1 /rest/api/content/{id}/child with pagination.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"page_id": {"type": "string", "description": "Parent page id"},
+					"start": {"type": "integer", "description": "Pagination start offset (default: 0).", "default": 0},
+					"limit": {"type": "integer", "description": "Page size (default: 25, max: 250).", "default": 25, "maximum": 250},
+					"expand": {"type": "string", "description": "Optional v1 expand (default: page)."},
+					"client": {"type": "string", "description": "Confluence client alias (key in CONFLUENCE_CLIENTS_JSON). If omitted, uses CONFLUENCE_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."}
+				},
+				"required": ["page_id"]
+			}`),
+		},
+		{
+			Name:        "confluence_list_page_attachments",
+			Description: "List attachments for a Confluence page id (read-only). Uses v1 /rest/api/content/{id}/child/attachment with pagination.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"page_id": {"type": "string", "description": "Parent page id"},
+					"start": {"type": "integer", "description": "Pagination start offset (default: 0).", "default": 0},
+					"limit": {"type": "integer", "description": "Page size (default: 25, max: 250).", "default": 25, "maximum": 250},
+					"expand": {"type": "string", "description": "Optional v1 expand."},
+					"client": {"type": "string", "description": "Confluence client alias (key in CONFLUENCE_CLIENTS_JSON). If omitted, uses CONFLUENCE_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."}
+				},
+				"required": ["page_id"]
+			}`),
+		},
+		{
+			Name:        "confluence_download_attachment",
+			Description: "Download a Confluence attachment by URL (read-only) and store it as an artifact. download_url must match base_url host.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"download_url": {"type": "string", "description": "Absolute or relative Confluence attachment download URL"},
+					"name": {"type": "string", "description": "Optional filename hint (used for extension)"},
+					"client": {"type": "string", "description": "Confluence client alias (key in CONFLUENCE_CLIENTS_JSON). If omitted, uses CONFLUENCE_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."}
+				},
+				"required": ["download_url"]
+			}`),
+		},
+		{
+			Name:        "confluence_xhtml_to_text",
+			Description: "Convert Confluence storage XHTML (body.storage.value) into readable plain text (read-only, offline).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"xhtml": {"type": "string", "description": "Confluence storage XHTML to convert (e.g., body.storage.value)."},
+					"preserve_links": {"type": "boolean", "description": "Append link targets as '(url)' after anchor text.", "default": false},
+					"max_chars": {"type": "integer", "description": "Max output characters (0 = no limit). Truncates on rune boundary.", "default": 20000, "minimum": 0, "maximum": 2000000}
+				},
+				"required": ["xhtml"]
 			}`),
 		},
 		{
@@ -667,6 +896,79 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 			}`),
 		},
 		{
+			Name:        "grafana_list_alerts",
+			Description: "List Grafana alerts (legacy alerting) (read-only). Calls GET /api/alerts.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"state": {"type": "array", "items": {"type": "string"}, "description": "Filter by alert state(s), e.g. [\"alerting\",\"ok\",\"paused\"]."},
+					"query": {"type": "string", "description": "Filter by alert name like."},
+					"dashboard_id": {"type": "array", "items": {"type": "integer"}, "description": "Filter by dashboard id(s)."},
+					"folder_id": {"type": "array", "items": {"type": "integer"}, "description": "Filter by folder id(s)."},
+					"limit": {"type": "integer", "description": "Max results."},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_get_alert",
+			Description: "Get a Grafana alert by id (legacy alerting) (read-only). Calls GET /api/alerts/:id.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"id": {"type": "integer", "description": "Alert id."},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				},
+				"required": ["id"]
+			}`),
+		},
+		{
+			Name:        "grafana_list_alert_rules",
+			Description: "List Grafana alert rules (unified alerting). Tries provisioning API first, falls back to ruler API.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				}
+			}`),
+		},
+		{
+			Name:        "grafana_get_alert_rule",
+			Description: "Get Grafana alert rule by UID via provisioning API (read-only).",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"uid": {"type": "string", "description": "Alert rule UID."},
+					"client": {"type": "string", "description": "Grafana client alias (key in GRAFANA_CLIENTS_JSON). If omitted, uses GRAFANA_DEFAULT_CLIENT."},
+					"base_url": {"type": "string", "description": "Override base URL. If omitted, uses env."},
+					"org_id": {"type": "integer", "description": "Override organization id (adds X-Grafana-Org-Id header)."},
+					"cf_access_client_id": {"type": "string", "description": "Cloudflare Access client id header (CF-Access-Client-Id) override."},
+					"cf_access_client_secret": {"type": "string", "description": "Cloudflare Access client secret header (CF-Access-Client-Secret) override."},
+					"timeout_ms": {"type": "integer", "description": "HTTP timeout override (ms)."},
+					"user_agent": {"type": "string", "description": "Override User-Agent header."}
+				},
+				"required": ["uid"]
+			}`),
+		},
+		{
 			Name:        "router",
 			Description: "(Internal) Planning router used by this proxy. Most MCP clients should call the `query` tool instead. `router` and `query` share the same input/output.",
 			InputSchema: json.RawMessage(`{
@@ -674,7 +976,36 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 				"properties": {
 					"input": {"type": "string", "description": "User request / task (free-form). Use this when you don't know which tool to call."},
 					"context": {"type": "object", "description": "Optional structured context"},
+					"mode": {"type": "string", "description": "Router mode. auto=plan+execute (default), planner=plan only, executor=execute provided steps only", "enum": ["auto", "planner", "executor"], "default": "auto"},
+					"steps": {
+						"type": "array",
+						"description": "Optional explicit execution plan (executor mode). If provided, the router will validate + execute these steps without calling the planner model.",
+						"items": {
+							"type": "object",
+							"properties": {
+								"name": {"type": "string"},
+								"source": {"type": "string", "enum": ["local", "upstream"]},
+								"args": {"type": "object"},
+								"reason": {"type": "string"},
+								"parallel_group": {"type": "string", "description": "Optional group id for parallel execution (requires parallelism > 1)."}
+							},
+							"required": ["name", "source", "args"]
+						}
+					},
+					"output": {
+						"type": "object",
+						"description": "Optional output shaping for JSON-heavy tool results (applied to executed_steps[].result). Backwards compatible: omit to keep full outputs.",
+						"properties": {
+							"view": {"type": "string", "description": "View preset", "enum": ["full", "summary", "metadata", "errors_only"], "default": "full"},
+							"include_fields": {"type": "array", "items": {"type": "string"}, "description": "Whitelist of fields/paths to keep (e.g. 'a.b[0].c' or '/a/b/0/c')"},
+							"exclude_fields": {"type": "array", "items": {"type": "string"}, "description": "Blacklist of fields/paths to remove"},
+							"max_items": {"type": "integer", "description": "Max items for arrays (applied recursively)"},
+							"max_depth": {"type": "integer", "description": "Max nesting depth (objects/arrays deeper than this are replaced with '<truncated>')"},
+							"redact": {"type": "array", "items": {"type": "string"}, "description": "Paths to redact (replaced with '[REDACTED]')"}
+						}
+					},
 					"max_steps": {"type": "integer", "description": "Max steps (default: 5, max: 8)", "default": 5},
+					"parallelism": {"type": "integer", "description": "Max parallelism for steps with the same parallel_group (default: 1).", "default": 1, "minimum": 1, "maximum": 8},
 					"include_answer": {"type": "boolean", "description": "Also produce a final human-readable answer", "default": false},
 					"dry_run": {"type": "boolean", "description": "Return plan only; do not execute tools", "default": false},
 					"format": {"type": "string", "description": "Output format", "enum": ["json", "text"], "default": "json"}
@@ -690,7 +1021,36 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 				"properties": {
 					"input": {"type": "string", "description": "User request / task (free-form)"},
 					"context": {"type": "object", "description": "Optional structured context"},
+					"mode": {"type": "string", "description": "Router mode. auto=plan+execute (default), planner=plan only, executor=execute provided steps only", "enum": ["auto", "planner", "executor"], "default": "auto"},
+					"steps": {
+						"type": "array",
+						"description": "Optional explicit execution plan (executor mode). If provided, the router will validate + execute these steps without calling the planner model.",
+						"items": {
+							"type": "object",
+							"properties": {
+								"name": {"type": "string"},
+								"source": {"type": "string", "enum": ["local", "upstream"]},
+								"args": {"type": "object"},
+								"reason": {"type": "string"},
+								"parallel_group": {"type": "string", "description": "Optional group id for parallel execution (requires parallelism > 1)."}
+							},
+							"required": ["name", "source", "args"]
+						}
+					},
+					"output": {
+						"type": "object",
+						"description": "Optional output shaping for JSON-heavy tool results (applied to executed_steps[].result). Backwards compatible: omit to keep full outputs.",
+						"properties": {
+							"view": {"type": "string", "description": "View preset", "enum": ["full", "summary", "metadata", "errors_only"], "default": "full"},
+							"include_fields": {"type": "array", "items": {"type": "string"}, "description": "Whitelist of fields/paths to keep (e.g. 'a.b[0].c' or '/a/b/0/c')"},
+							"exclude_fields": {"type": "array", "items": {"type": "string"}, "description": "Blacklist of fields/paths to remove"},
+							"max_items": {"type": "integer", "description": "Max items for arrays (applied recursively)"},
+							"max_depth": {"type": "integer", "description": "Max nesting depth (objects/arrays deeper than this are replaced with '<truncated>')"},
+							"redact": {"type": "array", "items": {"type": "string"}, "description": "Paths to redact (replaced with '[REDACTED]')"}
+						}
+					},
 					"max_steps": {"type": "integer", "description": "Max steps (default: 5, max: 8)", "default": 5},
+					"parallelism": {"type": "integer", "description": "Max parallelism for steps with the same parallel_group (default: 1).", "default": 1, "minimum": 1, "maximum": 8},
 					"include_answer": {"type": "boolean", "description": "Also produce a final human-readable answer", "default": false},
 					"dry_run": {"type": "boolean", "description": "Return plan only; do not execute tools", "default": false},
 					"format": {"type": "string", "description": "Output format", "enum": ["json", "text"], "default": "json"}
@@ -699,6 +1059,11 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 			}`),
 		},
 	}
+
+	// Append execution tools (execute_code, start_runtime, register_tool, etc.)
+	tools = append(tools, ExecutionToolDefinitions()...)
+
+	return tools
 }
 
 type SearchToolsInput struct {
@@ -727,6 +1092,16 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.handleDescribe(args)
 	case "execute_tool":
 		return h.handleExecute(args)
+	case "dev_scaffold_tool":
+		return h.devScaffoldTool(ctx, args)
+	case "artifact_save_text":
+		return h.artifactSaveText(ctx, args)
+	case "artifact_append_text":
+		return h.artifactAppendText(ctx, args)
+	case "artifact_list":
+		return h.artifactList(ctx, args)
+	case "artifact_search":
+		return h.artifactSearch(ctx, args)
 	case "router":
 		return h.runRouter(ctx, args)
 	case "query":
@@ -749,6 +1124,12 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.listPullRequestCommits(ctx, args)
 	case "get_pull_request_checks":
 		return h.getPullRequestChecks(ctx, args)
+	case "github_list_workflow_runs":
+		return h.githubListWorkflowRuns(ctx, args)
+	case "github_list_workflow_jobs":
+		return h.githubListWorkflowJobs(ctx, args)
+	case "github_download_job_logs":
+		return h.githubDownloadJobLogs(ctx, args)
 	case "fetch_complete_pr_diff":
 		return h.fetchCompletePRDiff(ctx, args)
 	case "fetch_complete_pr_files":
@@ -757,6 +1138,8 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.jiraGetMyself(ctx, args)
 	case "jira_get_issue":
 		return h.jiraGetIssue(ctx, args)
+	case "jira_get_issue_bundle":
+		return h.jiraGetIssueBundle(ctx, args)
 	case "jira_search_issues":
 		return h.jiraSearchIssues(ctx, args)
 	case "jira_get_issue_comments":
@@ -765,6 +1148,8 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.jiraGetIssueTransitions(ctx, args)
 	case "jira_list_projects":
 		return h.jiraListProjects(ctx, args)
+	case "jira_export_tasks":
+		return h.jiraExportTasks(ctx, args)
 	case "jira_add_comment":
 		return h.jiraAddComment(ctx, args)
 	case "jira_transition_issue":
@@ -783,6 +1168,14 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.confluenceGetPageByTitle(ctx, args)
 	case "confluence_search_cql":
 		return h.confluenceSearchCQL(ctx, args)
+	case "confluence_get_page_children":
+		return h.confluenceGetPageChildren(ctx, args)
+	case "confluence_list_page_attachments":
+		return h.confluenceListPageAttachments(ctx, args)
+	case "confluence_download_attachment":
+		return h.confluenceDownloadAttachment(ctx, args)
+	case "confluence_xhtml_to_text":
+		return h.confluenceXhtmlToText(ctx, args)
 	case "grafana_health":
 		return h.grafanaHealth(ctx, args)
 	case "grafana_get_current_user":
@@ -805,6 +1198,27 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.grafanaQueryAnnotations(ctx, args)
 	case "grafana_list_annotation_tags":
 		return h.grafanaListAnnotationTags(ctx, args)
+	case "grafana_list_alerts":
+		return h.grafanaListAlerts(ctx, args)
+	case "grafana_get_alert":
+		return h.grafanaGetAlert(ctx, args)
+	case "grafana_list_alert_rules":
+		return h.grafanaListAlertRules(ctx, args)
+	case "grafana_get_alert_rule":
+		return h.grafanaGetAlertRule(ctx, args)
+	// Execution tools (Stage 5 integration)
+	case "list_adapters":
+		return h.listAdapters(ctx, args)
+	case "execute_code":
+		return h.executeCode(ctx, args)
+	case "start_runtime":
+		return h.startRuntime(ctx, args)
+	case "register_tool":
+		return h.registerTool(ctx, args)
+	case "rollback_tool":
+		return h.rollbackTool(ctx, args)
+	case "discover_api":
+		return h.discoverAPI(ctx, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -817,11 +1231,16 @@ func (h *Handler) IsMetaTool(name string) bool {
 func (h *Handler) IsLocalTool(name string) bool {
 	switch name {
 	case "router", "query",
+		"dev_scaffold_tool",
+		"artifact_save_text", "artifact_append_text", "artifact_list", "artifact_search",
 		"get_pull_request_details", "list_pull_request_files", "get_pull_request_diff", "get_pull_request_summary", "get_pull_request_file_diff", "get_file_at_ref", "prepare_pull_request_review_bundle", "list_pull_request_commits", "get_pull_request_checks", "fetch_complete_pr_diff", "fetch_complete_pr_files",
-		"jira_get_myself", "jira_get_issue", "jira_search_issues", "jira_get_issue_comments", "jira_get_issue_transitions", "jira_list_projects",
+		"github_list_workflow_runs", "github_list_workflow_jobs", "github_download_job_logs",
+		"jira_get_myself", "jira_get_issue", "jira_get_issue_bundle", "jira_search_issues", "jira_get_issue_comments", "jira_get_issue_transitions", "jira_list_projects", "jira_export_tasks",
 		"jira_add_comment", "jira_transition_issue", "jira_create_issue", "jira_update_issue", "jira_add_attachment",
-		"confluence_list_spaces", "confluence_get_page", "confluence_get_page_by_title", "confluence_search_cql",
-		"grafana_health", "grafana_get_current_user", "grafana_search", "grafana_get_dashboard", "grafana_get_dashboard_summary", "grafana_list_folders", "grafana_get_folder", "grafana_list_datasources", "grafana_get_datasource", "grafana_query_annotations", "grafana_list_annotation_tags":
+		"confluence_list_spaces", "confluence_get_page", "confluence_get_page_by_title", "confluence_search_cql", "confluence_get_page_children", "confluence_list_page_attachments", "confluence_download_attachment", "confluence_xhtml_to_text",
+		"grafana_health", "grafana_get_current_user", "grafana_search", "grafana_get_dashboard", "grafana_get_dashboard_summary", "grafana_list_folders", "grafana_get_folder", "grafana_list_datasources", "grafana_get_datasource", "grafana_query_annotations", "grafana_list_annotation_tags", "grafana_list_alerts", "grafana_get_alert", "grafana_list_alert_rules", "grafana_get_alert_rule",
+		// Execution tools (Stage 5 integration)
+		"list_adapters", "execute_code", "start_runtime", "register_tool", "rollback_tool", "discover_api":
 		return true
 	default:
 		return false
@@ -920,13 +1339,16 @@ func expandQuery(q string) []string {
 		add("review", "pull_request_review", "comment")
 	}
 	if strings.Contains(q, "jira") || strings.Contains(q, "jql") || strings.Contains(q, "ticket") || strings.Contains(q, "issue") {
-		add("jira", "jql", "issue", "ticket", "search", "comment", "transition", "project")
+		add("jira", "jql", "issue", "ticket", "search", "comment", "transition", "project", "export")
 	}
 	if strings.Contains(q, "confluence") || strings.Contains(q, "wiki") || strings.Contains(q, "cql") || strings.Contains(q, "space") || strings.Contains(q, "page") {
-		add("confluence", "wiki", "cql", "search", "space", "page", "content", "title")
+		add("confluence", "wiki", "cql", "search", "space", "page", "content", "title", "xhtml", "storage", "convert", "text")
 	}
 	if strings.Contains(q, "grafana") || strings.Contains(q, "dashboard") || strings.Contains(q, "datasource") || strings.Contains(q, "folder") || strings.Contains(q, "annotation") {
 		add("grafana", "dashboard", "dashboards", "folder", "folders", "search", "datasource", "data source", "annotations")
+	}
+	if strings.Contains(q, "scaffold") || strings.Contains(q, "generate") || strings.Contains(q, "template") || strings.Contains(q, "patch") || strings.Contains(q, "worktree") {
+		add("scaffold", "generate", "template", "patch", "worktree", "dev")
 	}
 
 	// Dedupe
@@ -955,6 +1377,16 @@ func searchLocalTools(query string, category string, limit int) []mcp.ToolSummar
 	expanded := expandQuery(q)
 
 	tools := []mcp.ToolSummary{
+		func() mcp.ToolSummary {
+			if devModeEnabled() {
+				return mcp.ToolSummary{Name: "dev_scaffold_tool", Category: "local", Description: "(Dev mode) Generate patch + worktree for new local tools."}
+			}
+			return mcp.ToolSummary{}
+		}(),
+		{Name: "artifact_save_text", Category: "local", Description: "Save text as artifact (plan/notes)."},
+		{Name: "artifact_append_text", Category: "local", Description: "Append text to artifact (creates new artifact)."},
+		{Name: "artifact_list", Category: "local", Description: "List recent artifacts."},
+		{Name: "artifact_search", Category: "local", Description: "Search recent artifacts."},
 		{Name: "get_pull_request_details", Category: "local", Description: "PR metadata (title, base/head, author, state)."},
 		{Name: "list_pull_request_files", Category: "local", Description: "Changed files list with pagination."},
 		{Name: "get_pull_request_diff", Category: "local", Description: "Unified PR diff in chunks (offset/max_bytes). Supports file_filter for glob patterns."},
@@ -963,15 +1395,20 @@ func searchLocalTools(query string, category string, limit int) []mcp.ToolSummar
 		{Name: "list_pull_request_commits", Category: "local", Description: "PR commits list with pagination."},
 		{Name: "get_pull_request_checks", Category: "local", Description: "Check-runs for PR head sha."},
 		{Name: "get_file_at_ref", Category: "local", Description: "Raw file contents at a git ref."},
+		{Name: "github_list_workflow_runs", Category: "local", Description: "List GitHub Actions workflow runs (CI context)."},
+		{Name: "github_list_workflow_jobs", Category: "local", Description: "List jobs for a workflow run (CI context)."},
+		{Name: "github_download_job_logs", Category: "local", Description: "Download job logs and save as artifact (CI debugging)."},
 		{Name: "prepare_pull_request_review_bundle", Category: "local", Description: "PR details + file list (+ optional diff chunk/commits/checks) in one call."},
 		{Name: "fetch_complete_pr_diff", Category: "local", Description: "Fetches COMPLETE PR diff (all parts) and saves to file. Use for comprehensive reviews."},
 		{Name: "fetch_complete_pr_files", Category: "local", Description: "Fetches COMPLETE list of all changed files (all pages) and saves to file."},
 		{Name: "jira_get_myself", Category: "local", Description: "Authenticated Jira user info (auth validation)."},
 		{Name: "jira_get_issue", Category: "local", Description: "Get Jira issue by key/id (fields/expand supported)."},
+		{Name: "jira_get_issue_bundle", Category: "local", Description: "Get Jira issue + optional comments/changelog (faster ticket context)."},
 		{Name: "jira_search_issues", Category: "local", Description: "Search Jira issues by JQL with pagination (startAt/maxResults)."},
 		{Name: "jira_get_issue_comments", Category: "local", Description: "List Jira issue comments with pagination."},
 		{Name: "jira_get_issue_transitions", Category: "local", Description: "List available Jira workflow transitions for an issue."},
 		{Name: "jira_list_projects", Category: "local", Description: "List Jira projects (v3 paged /project/search; v2 /project)."},
+		{Name: "jira_export_tasks", Category: "local", Description: "Export Jira issues by JQL to local markdown files, expanding known links (e.g. Confluence pages)."},
 		{Name: "jira_add_comment", Category: "local", Description: "Add Jira issue comment (mutating; blocked by default policy)."},
 		{Name: "jira_transition_issue", Category: "local", Description: "Transition Jira issue (mutating; blocked by default policy)."},
 		{Name: "jira_create_issue", Category: "local", Description: "Create Jira issue (mutating; blocked by default policy)."},
@@ -981,6 +1418,10 @@ func searchLocalTools(query string, category string, limit int) []mcp.ToolSummar
 		{Name: "confluence_get_page", Category: "local", Description: "Get Confluence page by id (v2 storage preferred; v1 fallback)."},
 		{Name: "confluence_get_page_by_title", Category: "local", Description: "Find Confluence page by space_key + title."},
 		{Name: "confluence_search_cql", Category: "local", Description: "Search Confluence using CQL with pagination."},
+		{Name: "confluence_get_page_children", Category: "local", Description: "List child pages for a Confluence page id."},
+		{Name: "confluence_list_page_attachments", Category: "local", Description: "List attachments for a Confluence page id."},
+		{Name: "confluence_download_attachment", Category: "local", Description: "Download attachment and save to artifact."},
+		{Name: "confluence_xhtml_to_text", Category: "local", Description: "Convert Confluence storage XHTML to plain text (offline)."},
 		{Name: "grafana_health", Category: "local", Description: "Grafana health check (/api/health)."},
 		{Name: "grafana_get_current_user", Category: "local", Description: "Current Grafana user (/api/user) to validate auth."},
 		{Name: "grafana_search", Category: "local", Description: "Search Grafana folders/dashboards (/api/search) with pagination."},
@@ -992,6 +1433,14 @@ func searchLocalTools(query string, category string, limit int) []mcp.ToolSummar
 		{Name: "grafana_get_datasource", Category: "local", Description: "Get Grafana datasource by uid or name."},
 		{Name: "grafana_query_annotations", Category: "local", Description: "Query Grafana annotations (/api/annotations)."},
 		{Name: "grafana_list_annotation_tags", Category: "local", Description: "List Grafana annotation tags (/api/annotations/tags)."},
+		{Name: "grafana_list_alerts", Category: "local", Description: "List Grafana alerts (legacy alerting) (/api/alerts)."},
+		{Name: "grafana_get_alert", Category: "local", Description: "Get Grafana alert by id (legacy alerting) (/api/alerts/:id)."},
+		{Name: "grafana_list_alert_rules", Category: "local", Description: "List Grafana alert rules (unified alerting)."},
+		{Name: "grafana_get_alert_rule", Category: "local", Description: "Get Grafana alert rule by uid (provisioning API)."},
+	}
+
+	if len(tools) > 0 && tools[0].Name == "" {
+		tools = tools[1:]
 	}
 
 	// Basic scoring.

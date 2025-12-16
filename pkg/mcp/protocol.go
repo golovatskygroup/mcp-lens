@@ -38,10 +38,15 @@ type ServerInfo struct {
 }
 
 type ServerCapabilities struct {
-	Tools *ToolsCapability `json:"tools,omitempty"`
+	Tools     *ToolsCapability     `json:"tools,omitempty"`
+	Resources *ResourcesCapability `json:"resources,omitempty"`
 }
 
 type ToolsCapability struct {
+	ListChanged bool `json:"listChanged,omitempty"`
+}
+
+type ResourcesCapability struct {
 	ListChanged bool `json:"listChanged,omitempty"`
 }
 
@@ -105,6 +110,7 @@ type CallToolResult struct {
 type ContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+	URI  string `json:"uri,omitempty"`
 }
 
 // Helper functions

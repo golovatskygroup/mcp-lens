@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golovatskygroup/mcp-lens/internal/httpcache"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
@@ -240,7 +241,8 @@ func newConfluenceClient(clientName string, baseOverride string) (*confluenceCli
 		isCloudBridge: cfg.isCloudBridge,
 		authHeader:    cfg.authHeader,
 		c: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: httpcache.NewTransportFromEnv(nil),
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

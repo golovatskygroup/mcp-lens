@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golovatskygroup/mcp-lens/internal/httpcache"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
@@ -207,7 +208,8 @@ func newJiraClient(clientName string, baseOverride string, apiVersionOverride in
 		apiVersion: cfg.apiVersion,
 		authHeader: cfg.authHeader,
 		c: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: httpcache.NewTransportFromEnv(nil),
 			// Do not follow redirects automatically. Jira DC commonly redirects /rest/api/3 to login pages.
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse

@@ -41,8 +41,22 @@ func New(ctx context.Context, upstreamCfg proxy.Config) *Server {
 	})
 
 	// Make tool discovery include local (proxy-provided) tools as well.
-	reg.LoadTools(s.handler.BuiltinTools())
-	logf("Loaded %d local tools", len(s.handler.BuiltinTools()))
+	localTools := s.handler.BuiltinTools()
+	// Hide dev-only tools from discovery unless explicitly enabled.
+	devMode := strings.TrimSpace(os.Getenv("MCP_LENS_DEV_MODE"))
+	devOn := devMode == "1" || strings.EqualFold(devMode, "true") || strings.EqualFold(devMode, "yes")
+	if !devOn {
+		filtered := make([]mcp.Tool, 0, len(localTools))
+		for _, t := range localTools {
+			if t.Name == "dev_scaffold_tool" {
+				continue
+			}
+			filtered = append(filtered, t)
+		}
+		localTools = filtered
+	}
+	reg.LoadTools(localTools)
+	logf("Loaded %d local tools", len(localTools))
 
 	return s
 }
@@ -96,6 +110,10 @@ func (s *Server) handleRequest(req *mcp.Request) *mcp.Response {
 		return s.handleListTools(req)
 	case "tools/call":
 		return s.handleCallTool(req)
+	case "resources/list":
+		return s.handleListResources(req)
+	case "resources/read":
+		return s.handleReadResource(req)
 	case "ping":
 		return s.handlePing(req)
 	default:
@@ -108,6 +126,9 @@ func (s *Server) handleInitialize(req *mcp.Request) *mcp.Response {
 		ProtocolVersion: "2024-11-05",
 		Capabilities: mcp.ServerCapabilities{
 			Tools: &mcp.ToolsCapability{
+				ListChanged: true,
+			},
+			Resources: &mcp.ResourcesCapability{
 				ListChanged: true,
 			},
 		},
@@ -203,14 +224,45 @@ func (s *Server) buildInstructions() string {
 	sb.WriteString("Example:\n")
 	sb.WriteString("  {\"name\": \"query\", \"arguments\": {\"input\": \"Show open PRs in owner/repo\"}}\n\n")
 
+	sb.WriteString("## Discovery (no LLM required)\n\n")
+	sb.WriteString("You can always ask for tool discovery without configuring OpenRouter:\n")
+	sb.WriteString("- \"help\"\n")
+	sb.WriteString("- \"search tools grafana\"\n")
+	sb.WriteString("- \"describe tool confluence_get_page\"\n\n")
+
+	sb.WriteString("## Output shaping (optional)\n\n")
+	sb.WriteString("To reduce noisy JSON-heavy results, pass `output` in query arguments:\n")
+	sb.WriteString("- view: full|summary|metadata|errors_only\n")
+	sb.WriteString("- include_fields / exclude_fields (paths like a.b[0].c or /a/b/0/c)\n")
+	sb.WriteString("- max_items / max_depth / redact\n\n")
+
+	sb.WriteString("## Confluence body formats\n\n")
+	sb.WriteString("Confluence page bodies are markup by design:\n")
+	sb.WriteString("- body.view is rendered HTML (good for saving as .html)\n")
+	sb.WriteString("- body.storage is Confluence storage XHTML (better for deterministic parsing)\n\n")
+
+	sb.WriteString("## Large results (artifacts)\n\n")
+	sb.WriteString("If a tool result is too large, it may be stored as an artifact and replaced with:\n")
+	sb.WriteString("- artifact_uri: artifact://<id>\n")
+	sb.WriteString("- artifact_path: local file path\n")
+	sb.WriteString("Artifacts are also exposed via MCP resources: resources/list + resources/read.\n\n")
+
 	sb.WriteString("Local tools (used internally by the router):\n")
 	sb.WriteString("- search_tools: Find tools by keyword or category (format=text|json)\n")
 	sb.WriteString("- describe_tool: Get full schema of a specific tool\n")
 	sb.WriteString("- execute_tool: Run an upstream tool (and activate it for the session)\n")
 	sb.WriteString("- get_pull_request_details / list_pull_request_files / get_pull_request_diff / list_pull_request_commits / get_pull_request_checks\n")
 	sb.WriteString("- prepare_pull_request_review_bundle\n\n")
+
+	devMode := strings.TrimSpace(os.Getenv("MCP_LENS_DEV_MODE"))
+	if devMode == "1" || strings.EqualFold(devMode, "true") || strings.EqualFold(devMode, "yes") {
+		sb.WriteString("Dev-only tools (require MCP_LENS_DEV_MODE=1):\n")
+		sb.WriteString("- dev_scaffold_tool: generate patch + isolated git worktree for a new local tool\n\n")
+	}
+
 	sb.WriteString("Jira local tools (read-only by default policy):\n")
-	sb.WriteString("- jira_get_myself / jira_list_projects / jira_search_issues / jira_get_issue / jira_get_issue_comments / jira_get_issue_transitions\n\n")
+	sb.WriteString("- jira_get_myself / jira_list_projects / jira_search_issues / jira_get_issue / jira_get_issue_comments / jira_get_issue_transitions\n")
+	sb.WriteString("- jira_export_tasks (exports to local files + expands known links)\n\n")
 
 	sb.WriteString("Notes:\n")
 	sb.WriteString("- GitHub 404 often means private repo or missing access. Set GITHUB_TOKEN for API access.\n\n")
