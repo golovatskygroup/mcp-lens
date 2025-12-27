@@ -3,6 +3,8 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/golovatskygroup/mcp-lens/internal/envutil"
 )
 
 func BuildPlanSystemPrompt() string {
@@ -51,7 +53,7 @@ func BuildPlanUserPrompt(userInput string, ctx map[string]any, catalog []ToolCat
 		"file_output": "Tools like fetch_complete_pr_diff save results to files and return file paths. The LLM client can then read these files.",
 	}
 
-	if devModeEnabled() {
+	if envutil.DevModeEnabled() {
 		instructions["dev_workflow"] = []string{
 			"When the user asks to add/generate a new local tool, call dev_scaffold_tool with tool_name/tool_description/input_schema and a clear spec.",
 			"Prefer use_worktree=true (isolated worktree) and run_tests=false by default; keep remote operations read-only.",

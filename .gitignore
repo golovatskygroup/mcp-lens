@@ -1,17 +1,43 @@
-# Binaries (built binary, not npm package)
+# --- Binaries & Build Artifacts ---
 /mcp-lens
-
-# Local configs (may contain secrets)
-config.yaml
-.env
-
-# OS
-.DS_Store
-
-# Node dependencies and build artifacts (npm packages)
-node_modules/
+bin/
+build/
 dist/
 *.tsbuildinfo
+
+# --- Local Configs & Secrets ---
+config.yaml
+.env
+.env.*
+!.env.example
+
+# --- Gleam & BEAM ---
+erl_leveldb/
+manifest.lock
+
+# --- Dependencies ---
+node_modules/
 # Note: keep package-lock.json committed for CI (npm ci)
-# (do not ignore)
+
+# --- Testing & Coverage ---
+coverage.out
+*.lcov
+.nyc_output/
+
+# --- OS & IDEs ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Temporary Files & Worktrees ---
+*.log
+tmp/
 bin/*.worktrees/
+.worktrees/
+
+# --- Documentation Artifacts ---
+# (Optional: ignore generated docs if they shouldn't be in the repo)
+# /docs/generated/

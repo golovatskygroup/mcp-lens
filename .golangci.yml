@@ -1,0 +1,87 @@
+# .golangci.yml
+# Configuration for golangci-lint to ensure code quality and consistency
+# for the MCP Router project.
+
+run:
+  # The default concurrency is a number of CPUs.
+  concurrency: 4
+  # Timeout for analysis, e.g. 30s, 5m.
+  timeout: 5m
+  # Exit code when issues were found.
+  issues-exit-code: 1
+  # Include test files in the analysis.
+  tests: true
+
+linters:
+  # Disable all default linters first to be explicit.
+  disable-all: true
+  # Enable specific linters as per requirements.
+  enable:
+    - govet        # Reports common mistakes (shadowing, printf, etc.)
+    - staticcheck  # Applies a ton of static analysis checks
+    - errcheck     # Checks for unchecked errors
+    - gofmt        # Checks whether code was gofmt-ed
+    - goimports    # Checks for unused/unorganized imports
+    - revive       # Fast, configurable, extensible, flexible, and beautiful linter for Go
+    - unused       # Checks for unused constants, variables, functions and types
+
+linters-settings:
+  govet:
+    # Report about shadowed variables.
+    check-shadowing: true
+    enable-all: true
+    disable:
+      - fieldalignment # Often too pedantic for non-performance critical code
+  
+  revive:
+    # Set confidence level for revive.
+    confidence: 0.8
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: dot-imports
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: exported
+      - name: if-return
+      - name: increment-decrement
+      - name: var-naming
+      - name: var-declaration
+      - name: package-comments
+      - name: range
+      - name: receiver-naming
+      - name: time-naming
+      - name: unexported-return
+      - name: indent-error-flow
+      - name: errorf
+
+  errcheck:
+    # Report about not checking of errors in type assertions.
+    check-type-assertions: true
+    # Report about assignment of errors to blank identifier.
+    check-blank: true
+
+  goimports:
+    # Put local imports after 3rd-party packages.
+    local-prefixes: github.com/nyarum/golovatskygroup/mcp-proxy
+
+issues:
+  # Excluding some common false positives or intentional patterns.
+  exclude-rules:
+    # Exclude errcheck for Close() methods as they are often handled via defer without check.
+    - path: _test\.go
+      linters:
+        - errcheck
+    # Allow shadowing for 'err' as it is idiomatic in Go.
+    - linters:
+        - govet
+      text: "shadow: declaration of \"err\""
+
+  # Maximum issues count per one linter. Set to 0 to have no limit.
+  max-issues-per-linter: 0
+  # Maximum count of issues with the same text. Set to 0 to have no limit.
+  max-same-issues: 0
+
+  # Fix found issues (if supported by the linter).
+  fix: false

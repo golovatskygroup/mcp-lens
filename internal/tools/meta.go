@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/golovatskygroup/mcp-lens/internal/artifacts"
+	"github.com/golovatskygroup/mcp-lens/internal/envutil"
 	"github.com/golovatskygroup/mcp-lens/internal/registry"
+	"github.com/golovatskygroup/mcp-lens/internal/tool"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
 
@@ -34,7 +37,7 @@ func (h *Handler) SetExecutionDependencies(deps *ExecutionDependencies) {
 	h.execDeps = deps
 }
 
-// BuiltinTools returns local tools provided by the proxy.
+// BuiltinTools returns local tools provided by the proxy (including active dynamic tools).
 func (h *Handler) BuiltinTools() []mcp.Tool {
 	tools := []mcp.Tool{
 		{
@@ -969,51 +972,6 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 			}`),
 		},
 		{
-			Name:        "router",
-			Description: "(Internal) Planning router used by this proxy. Most MCP clients should call the `query` tool instead. `router` and `query` share the same input/output.",
-			InputSchema: json.RawMessage(`{
-				"type": "object",
-				"properties": {
-					"input": {"type": "string", "description": "User request / task (free-form). Use this when you don't know which tool to call."},
-					"context": {"type": "object", "description": "Optional structured context"},
-					"mode": {"type": "string", "description": "Router mode. auto=plan+execute (default), planner=plan only, executor=execute provided steps only", "enum": ["auto", "planner", "executor"], "default": "auto"},
-					"steps": {
-						"type": "array",
-						"description": "Optional explicit execution plan (executor mode). If provided, the router will validate + execute these steps without calling the planner model.",
-						"items": {
-							"type": "object",
-							"properties": {
-								"name": {"type": "string"},
-								"source": {"type": "string", "enum": ["local", "upstream"]},
-								"args": {"type": "object"},
-								"reason": {"type": "string"},
-								"parallel_group": {"type": "string", "description": "Optional group id for parallel execution (requires parallelism > 1)."}
-							},
-							"required": ["name", "source", "args"]
-						}
-					},
-					"output": {
-						"type": "object",
-						"description": "Optional output shaping for JSON-heavy tool results (applied to executed_steps[].result). Backwards compatible: omit to keep full outputs.",
-						"properties": {
-							"view": {"type": "string", "description": "View preset", "enum": ["full", "summary", "metadata", "errors_only"], "default": "full"},
-							"include_fields": {"type": "array", "items": {"type": "string"}, "description": "Whitelist of fields/paths to keep (e.g. 'a.b[0].c' or '/a/b/0/c')"},
-							"exclude_fields": {"type": "array", "items": {"type": "string"}, "description": "Blacklist of fields/paths to remove"},
-							"max_items": {"type": "integer", "description": "Max items for arrays (applied recursively)"},
-							"max_depth": {"type": "integer", "description": "Max nesting depth (objects/arrays deeper than this are replaced with '<truncated>')"},
-							"redact": {"type": "array", "items": {"type": "string"}, "description": "Paths to redact (replaced with '[REDACTED]')"}
-						}
-					},
-					"max_steps": {"type": "integer", "description": "Max steps (default: 5, max: 8)", "default": 5},
-					"parallelism": {"type": "integer", "description": "Max parallelism for steps with the same parallel_group (default: 1).", "default": 1, "minimum": 1, "maximum": 8},
-					"include_answer": {"type": "boolean", "description": "Also produce a final human-readable answer", "default": false},
-					"dry_run": {"type": "boolean", "description": "Return plan only; do not execute tools", "default": false},
-					"format": {"type": "string", "description": "Output format", "enum": ["json", "text"], "default": "json"}
-				},
-				"required": ["input"]
-			}`),
-		},
-		{
 			Name:        "query",
 			Description: "Single entrypoint for MCP clients. Provide a free-form request and the proxy will (1) plan up to max_steps, (2) validate the plan against a read-only policy, and (3) execute the necessary local/upstream tools. Use this whenever you're not sure which tool to call.",
 			InputSchema: json.RawMessage(`{
@@ -1063,6 +1021,25 @@ func (h *Handler) BuiltinTools() []mcp.Tool {
 	// Append execution tools (execute_code, start_runtime, register_tool, etc.)
 	tools = append(tools, ExecutionToolDefinitions()...)
 
+	// Append active dynamic tools from registry (Iteration 1: Task 0009)
+	if h.execDeps != nil && h.execDeps.ToolRegistry != nil {
+		dynamicTools, err := h.execDeps.ToolRegistry.List(context.Background())
+		if err == nil {
+			for _, dt := range dynamicTools {
+				if dt.Status != "active" {
+					continue
+				}
+				// Convert tool.ToolDefinition to mcp.Tool
+				schemaBytes, _ := json.Marshal(dt.InputSchema)
+				tools = append(tools, mcp.Tool{
+					Name:        dt.Name,
+					Description: dt.Description,
+					InputSchema: json.RawMessage(schemaBytes),
+				})
+			}
+		}
+	}
+
 	return tools
 }
 
@@ -1102,8 +1079,6 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 		return h.artifactList(ctx, args)
 	case "artifact_search":
 		return h.artifactSearch(ctx, args)
-	case "router":
-		return h.runRouter(ctx, args)
 	case "query":
 		return h.runRouter(ctx, args)
 	case "get_pull_request_details":
@@ -1220,7 +1195,14 @@ func (h *Handler) Handle(ctx context.Context, name string, args json.RawMessage)
 	case "discover_api":
 		return h.discoverAPI(ctx, args)
 	default:
-		return nil, fmt.Errorf("unknown tool: %s", name)
+		// Try to execute as dynamic tool (Iteration 2: Task 0009)
+		if h.execDeps != nil && h.execDeps.ToolRegistry != nil {
+			tool, err := h.execDeps.ToolRegistry.Get(ctx, name)
+			if err == nil && tool != nil && tool.Status == "active" {
+				return h.executeDynamicTool(ctx, tool, args)
+			}
+		}
+		return nil, fmt.Errorf("Tool '%s' not found. Register it first with register_tool()", name)
 	}
 }
 
@@ -1230,7 +1212,7 @@ func (h *Handler) IsMetaTool(name string) bool {
 
 func (h *Handler) IsLocalTool(name string) bool {
 	switch name {
-	case "router", "query",
+	case "query",
 		"dev_scaffold_tool",
 		"artifact_save_text", "artifact_append_text", "artifact_list", "artifact_search",
 		"get_pull_request_details", "list_pull_request_files", "get_pull_request_diff", "get_pull_request_summary", "get_pull_request_file_diff", "get_file_at_ref", "prepare_pull_request_review_bundle", "list_pull_request_commits", "get_pull_request_checks", "fetch_complete_pr_diff", "fetch_complete_pr_files",
@@ -1243,6 +1225,13 @@ func (h *Handler) IsLocalTool(name string) bool {
 		"list_adapters", "execute_code", "start_runtime", "register_tool", "rollback_tool", "discover_api":
 		return true
 	default:
+		// Check if this is a dynamic tool (Iteration 1: Task 0009)
+		if h.execDeps != nil && h.execDeps.ToolRegistry != nil {
+			tool, err := h.execDeps.ToolRegistry.Get(context.Background(), name)
+			if err == nil && tool != nil && tool.Status == "active" {
+				return true
+			}
+		}
 		return false
 	}
 }
@@ -1261,10 +1250,13 @@ func (h *Handler) handleSearch(args json.RawMessage) (*mcp.CallToolResult, error
 	// Also search local tools (so PR-review tools are discoverable even if upstream lacks them).
 	local := searchLocalTools(input.Query, input.Category, input.Limit)
 
+	// Add custom/dynamic tools from registry
+	customTools := h.searchCustomTools(input.Query, input.Category, input.Limit)
+
 	// Merge (dedupe by name).
 	seen := map[string]struct{}{}
-	merged := make([]mcp.ToolSummary, 0, len(results)+len(local))
-	for _, r := range append(local, results...) {
+	merged := make([]mcp.ToolSummary, 0, len(results)+len(local)+len(customTools))
+	for _, r := range append(append(local, customTools...), results...) {
 		if _, ok := seen[r.Name]; ok {
 			continue
 		}
@@ -1378,7 +1370,7 @@ func searchLocalTools(query string, category string, limit int) []mcp.ToolSummar
 
 	tools := []mcp.ToolSummary{
 		func() mcp.ToolSummary {
-			if devModeEnabled() {
+			if envutil.DevModeEnabled() {
 				return mcp.ToolSummary{Name: "dev_scaffold_tool", Category: "local", Description: "(Dev mode) Generate patch + worktree for new local tools."}
 			}
 			return mcp.ToolSummary{}
@@ -1488,6 +1480,86 @@ func searchLocalTools(query string, category string, limit int) []mcp.ToolSummar
 	return out
 }
 
+// searchCustomTools searches dynamic/custom tools from ToolRegistry
+func (h *Handler) searchCustomTools(query string, category string, limit int) []mcp.ToolSummary {
+	if h.execDeps == nil || h.execDeps.ToolRegistry == nil {
+		return nil
+	}
+
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return nil
+	}
+
+	expanded := expandQuery(q)
+
+	// Get all active dynamic tools from registry
+	dynamicTools, err := h.execDeps.ToolRegistry.List(context.Background())
+	if err != nil {
+		return nil
+	}
+
+	// Filter by category if specified
+	if category != "" && !strings.EqualFold(category, "custom") {
+		return nil
+	}
+
+	// Score and filter tools
+	type scored struct {
+		s     mcp.ToolSummary
+		score int
+	}
+	var scoredRes []scored
+
+	for _, dt := range dynamicTools {
+		if dt.Status != "active" {
+			continue
+		}
+
+		nameLower := strings.ToLower(dt.Name)
+		descLower := strings.ToLower(dt.Description)
+		score := 0
+
+		for _, term := range expanded {
+			if strings.Contains(nameLower, term) {
+				score += 100
+			}
+			if strings.Contains(descLower, term) {
+				score += 30
+			}
+		}
+
+		if score > 0 {
+			scoredRes = append(scoredRes, scored{
+				s: mcp.ToolSummary{
+					Name:        dt.Name,
+					Category:    "custom",
+					Description: dt.Description,
+				},
+				score: score,
+			})
+		}
+	}
+
+	// Sort by score
+	for i := 0; i < len(scoredRes); i++ {
+		for j := i + 1; j < len(scoredRes); j++ {
+			if scoredRes[j].score > scoredRes[i].score {
+				scoredRes[i], scoredRes[j] = scoredRes[j], scoredRes[i]
+			}
+		}
+	}
+
+	if limit <= 0 {
+		limit = 10
+	}
+	out := make([]mcp.ToolSummary, 0, limit)
+	for i := 0; i < len(scoredRes) && i < limit; i++ {
+		out = append(out, scoredRes[i].s)
+	}
+	return out
+}
+
 func (h *Handler) handleDescribe(args json.RawMessage) (*mcp.CallToolResult, error) {
 	var input DescribeToolInput
 	if err := json.Unmarshal(args, &input); err != nil {
@@ -1552,4 +1624,89 @@ func textResult(text string) *mcp.CallToolResult {
 
 func errorResult(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.ContentBlock{{Type: "text", Text: "Error: " + msg}}, IsError: true}
+}
+
+// executeDynamicTool executes a registered dynamic tool (Iteration 2: Task 0009).
+func (h *Handler) executeDynamicTool(ctx context.Context, tool *tool.ToolDefinition, args json.RawMessage) (*mcp.CallToolResult, error) {
+	startTime := time.Now()
+	
+	// Parse args as input
+	var input map[string]interface{}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return errorResult("Invalid input: " + err.Error()), nil
+	}
+
+	// Execute code via execute_code mechanism
+	execParams := map[string]interface{}{
+		"language": tool.Language,
+		"code":     tool.Code,
+		"input":    input,
+		"timeout":  "30s",
+	}
+	execArgsBytes, _ := json.Marshal(execParams)
+	
+	result, err := h.executeCode(ctx, execArgsBytes)
+	if err != nil {
+		// TODO: log execution failure (requires type assertion or interface extension)
+		_ = startTime
+		return result, err
+	}
+
+	// Parse result to extract JSON output
+	if result.IsError {
+		// TODO: log execution failure (requires type assertion or interface extension)
+		return result, nil
+	}
+
+	// Try to parse the output as JSON (contract: dynamic tools must output JSON)
+	var parsedResult interface{}
+	if len(result.Content) > 0 {
+		text := result.Content[0].Text
+		// Try to extract JSON from the text (may be wrapped in ExecuteCodeResult)
+		if err := json.Unmarshal([]byte(text), &parsedResult); err != nil {
+			// Not valid JSON - try to extract from "result" field (or "output" for backward compatibility)
+			var execResult map[string]interface{}
+			if json.Unmarshal([]byte(text), &execResult) == nil {
+				// Try "result" field first (correct field name)
+				if resultStr, ok := execResult["result"].(string); ok {
+					if json.Unmarshal([]byte(resultStr), &parsedResult) == nil {
+						// Successfully extracted JSON from result
+						resultBytes, _ := json.Marshal(parsedResult)
+						result.Content[0].Text = string(resultBytes)
+					} else {
+						// result field exists but is not valid JSON
+						result.IsError = true
+						result.Content[0].Text = "output must be valid JSON"
+					}
+				} else if output, ok := execResult["output"].(string); ok {
+					// Fallback to "output" for backward compatibility
+					if json.Unmarshal([]byte(output), &parsedResult) == nil {
+						// Successfully extracted JSON from output
+						resultBytes, _ := json.Marshal(parsedResult)
+						result.Content[0].Text = string(resultBytes)
+					} else {
+						// output field exists but is not valid JSON
+						result.IsError = true
+						result.Content[0].Text = "output must be valid JSON"
+					}
+				} else {
+					// No result or output field found, entire text is not valid JSON
+					result.IsError = true
+					result.Content[0].Text = "output must be valid JSON"
+				}
+			} else {
+				// Text is not valid JSON at all
+				result.IsError = true
+				result.Content[0].Text = "output must be valid JSON"
+			}
+		} else {
+			// Already valid JSON
+			resultBytes, _ := json.Marshal(parsedResult)
+			result.Content[0].Text = string(resultBytes)
+		}
+	}
+
+	// TODO: log successful execution (requires type assertion or interface extension)
+
+	return result, nil
 }

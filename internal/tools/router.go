@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/golovatskygroup/mcp-lens/internal/artifacts"
+	"github.com/golovatskygroup/mcp-lens/internal/envutil"
 	"github.com/golovatskygroup/mcp-lens/internal/router"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 	"golang.org/x/sync/errgroup"
@@ -28,75 +28,23 @@ type routerInput struct {
 	Format        string                `json:"format,omitempty"` // json|text
 }
 
-func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.CallToolResult, error) {
+// parseRouterInput parses and validates router input arguments.
+func parseRouterInput(args json.RawMessage) (routerInput, error) {
 	var in routerInput
 	if err := json.Unmarshal(args, &in); err != nil {
-		return errorResult("Invalid input: " + err.Error()), nil
+		return routerInput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if strings.TrimSpace(in.Input) == "" {
-		return errorResult("input is required"), nil
+		return routerInput{}, fmt.Errorf("input is required")
 	}
 	if in.Context == nil {
 		in.Context = map[string]any{}
 	}
+	return in, nil
+}
 
-	// Deterministic context extraction (URLs/IDs) before any planning.
-	if extracted := router.ExtractStructuredContext(in.Input); len(extracted) > 0 {
-		for k, v := range extracted {
-			if _, exists := in.Context[k]; !exists {
-				in.Context[k] = v
-			}
-		}
-	}
-
-	// Convenience: allow prefixing the query with `jira <client>` to route Jira calls to that client.
-	if client, rest := extractJiraClientPrefix(in.Input); client != "" {
-		in.Context["jira_client"] = client
-		if rest != "" {
-			in.Input = rest
-		}
-	}
-
-	// Convenience: allow prefixing the query with `confluence <client>` to route Confluence calls to that client.
-	if client, rest := extractConfluenceClientPrefix(in.Input); client != "" {
-		in.Context["confluence_client"] = client
-		if rest != "" {
-			in.Input = rest
-		}
-	}
-
-	// Convenience: allow prefixing the query with `grafana <client>` to route Grafana calls to that client.
-	if client, rest := extractGrafanaClientPrefix(in.Input); client != "" {
-		in.Context["grafana_client"] = client
-		if rest != "" {
-			in.Input = rest
-		}
-	}
-
-	// Provide configured Jira clients (no secrets) to the planner so it can pick the right instance.
-	if clients := jiraPublicClientsFromEnv(); len(clients) > 0 {
-		in.Context["jira_clients"] = clients
-	}
-	if def := strings.TrimSpace(os.Getenv("JIRA_DEFAULT_CLIENT")); def != "" {
-		in.Context["jira_default_client"] = def
-	}
-
-	// Provide configured Confluence clients (no secrets) to the planner so it can pick the right instance.
-	if clients := confluencePublicClientsFromEnv(); len(clients) > 0 {
-		in.Context["confluence_clients"] = clients
-	}
-	if def := strings.TrimSpace(os.Getenv("CONFLUENCE_DEFAULT_CLIENT")); def != "" {
-		in.Context["confluence_default_client"] = def
-	}
-
-	// Provide configured Grafana clients (no secrets) to the planner so it can pick the right instance.
-	if clients := grafanaPublicClientsFromEnv(); len(clients) > 0 {
-		in.Context["grafana_clients"] = clients
-	}
-	if def := strings.TrimSpace(os.Getenv("GRAFANA_DEFAULT_CLIENT")); def != "" {
-		in.Context["grafana_default_client"] = def
-	}
-
+// validateRouterInput validates router input parameters and sets defaults.
+func validateRouterInput(in *routerInput) error {
 	if in.MaxSteps <= 0 {
 		if len(in.Steps) > 0 {
 			in.MaxSteps = len(in.Steps)
@@ -105,7 +53,7 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 		}
 	}
 	if in.MaxSteps > 8 {
-		return errorResult("max_steps must be <= 8"), nil
+		return fmt.Errorf("max_steps must be <= 8")
 	}
 	if in.Format == "" {
 		in.Format = "json"
@@ -114,7 +62,7 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 		in.Parallelism = 1
 	}
 	if in.Parallelism > 8 {
-		return errorResult("parallelism must be <= 8"), nil
+		return fmt.Errorf("parallelism must be <= 8")
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
@@ -123,20 +71,50 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 	}
 	switch mode {
 	case "auto", "planner", "executor":
+		in.Mode = mode
 	default:
-		return errorResult("mode must be one of: auto, planner, executor"), nil
+		return fmt.Errorf("mode must be one of: auto, planner, executor")
 	}
 
 	if mode == "executor" && len(in.Steps) == 0 {
-		return errorResult("executor mode requires non-empty steps"), nil
+		return fmt.Errorf("executor mode requires non-empty steps")
 	}
 	if mode == "planner" && len(in.Steps) > 0 {
-		return errorResult("planner mode does not allow steps"), nil
+		return fmt.Errorf("planner mode does not allow steps")
 	}
+
+	return nil
+}
+
+// formatRouterResult formats the router result according to the requested format.
+func formatRouterResult(res router.RouterResult, format string) (*mcp.CallToolResult, error) {
+	if strings.EqualFold(format, "text") {
+		b, err := json.MarshalIndent(res, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", err)
+		}
+		return textResult(fmt.Sprintf("%s\n", string(b))), nil
+	}
+	return jsonResult(res), nil
+}
+
+func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.CallToolResult, error) {
+	// Parse and validate input
+	in, err := parseRouterInput(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	if err := validateRouterInput(&in); err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	// Prepare context (extract URLs/IDs, parse prefixes, inject env config)
+	in.Input, in.Context = prepareRouterContext(in.Input, in.Context)
 
 	// Fast-path: safe discovery/help without OpenRouter.
 	if fp := parseDiscoveryFastPath(in.Input); fp != nil {
-		policy := router.DefaultPolicy()
+		policy := h.buildPolicy()
 		plan := router.ModelPlan{Steps: []router.PlanStep{fp.step}, FinalAnswerNeeded: false}
 		if err := router.ValidatePlan(plan, policy, h.buildRouterCatalog(), 1); err != nil {
 			return errorResult(err.Error()), nil
@@ -144,25 +122,23 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 		res := router.RouterResult{Plan: plan}
 		if !in.DryRun {
 			execSteps, manifest, err := h.executePlan(ctx, plan, policy, in.Output, in.Parallelism)
+			// Always return partial results even if execution failed
 			res.ExecutedSteps = execSteps
 			res.Manifest = manifest
 			if err != nil {
-				return jsonResult(res), nil
+				// Return partial results with error
+				return formatRouterResult(res, in.Format)
 			}
 		}
 		if fp.answer != "" {
 			res.Answer = fp.answer
 		}
-		if strings.EqualFold(in.Format, "text") {
-			b, _ := json.MarshalIndent(res, "", "  ")
-			return textResult(fmt.Sprintf("%s\n", string(b))), nil
-		}
-		return jsonResult(res), nil
+		return formatRouterResult(res, in.Format)
 	}
 
 	// Executor mode: validate + execute provided steps without calling the planner model.
-	if len(in.Steps) > 0 && mode != "planner" {
-		policy := router.DefaultPolicy()
+	if len(in.Steps) > 0 && in.Mode != "planner" {
+		policy := h.buildPolicy()
 		plan := router.ModelPlan{Steps: in.Steps, FinalAnswerNeeded: in.IncludeAnswer}
 		if err := router.ValidatePlan(plan, policy, h.buildRouterCatalog(), in.MaxSteps); err != nil {
 			return errorResult(err.Error()), nil
@@ -171,50 +147,32 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 		res := router.RouterResult{Plan: plan}
 		if !in.DryRun {
 			execSteps, manifest, err := h.executePlan(ctx, plan, policy, in.Output, in.Parallelism)
+			// Always return partial results even if execution failed
 			res.ExecutedSteps = execSteps
 			res.Manifest = manifest
 			if err != nil {
-				if strings.EqualFold(in.Format, "text") {
-					b, _ := json.MarshalIndent(res, "", "  ")
-					return textResult(fmt.Sprintf("%s\n", string(b))), nil
-				}
-				return jsonResult(res), nil
+				// Return partial results with error
+				return formatRouterResult(res, in.Format)
 			}
 		}
 
 		if in.IncludeAnswer {
 			// Executor mode is designed to work even without OpenRouter; provide a deterministic summary.
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Executed %d step(s).\n", len(res.ExecutedSteps)))
-			for i, st := range res.ExecutedSteps {
-				if st.OK {
-					sb.WriteString(fmt.Sprintf("%d) %s: ok\n", i+1, st.Name))
-				} else {
-					sb.WriteString(fmt.Sprintf("%d) %s: error: %s\n", i+1, st.Name, st.Error))
-				}
-			}
-			if res.Manifest != nil && len(res.Manifest.Artifacts) > 0 {
-				sb.WriteString("\nArtifacts:\n")
-				for _, a := range res.Manifest.Artifacts {
-					sb.WriteString(fmt.Sprintf("- %s (%d bytes)\n", a.Path, a.Bytes))
-				}
-			}
-			res.Answer = sb.String()
+			res.Answer = h.buildExecutorAnswer(res)
 		}
 
-		if strings.EqualFold(in.Format, "text") {
-			b, _ := json.MarshalIndent(res, "", "  ")
-			return textResult(fmt.Sprintf("%s\n", string(b))), nil
-		}
-		return jsonResult(res), nil
+		return formatRouterResult(res, in.Format)
 	}
 
+	// Planner/auto mode: create OpenRouter client and plan
 	cl, err := router.NewOpenRouterClientFromEnv()
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	// Note: OpenRouterClient uses http.Client which manages its own connection pool.
+	// The client doesn't need explicit cleanup, but we respect context cancellation.
 
-	policy := router.DefaultPolicy()
+	policy := h.buildPolicy()
 
 	catalog := h.buildRouterCatalog()
 
@@ -223,14 +181,8 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 		return errorResult(err.Error()), nil
 	}
 
-	// Make Jira instance selection deterministic (do not rely on the model to thread it through).
-	h.applyJiraClientToPlan(&plan, in.Context)
-	// Make Confluence instance selection deterministic (do not rely on the model to thread it through).
-	h.applyConfluenceClientToPlan(&plan, in.Context)
-	// Make Grafana instance selection deterministic (do not rely on the model to thread it through).
-	h.applyGrafanaClientToPlan(&plan, in.Context)
-	// Make URL/ID context injection deterministic (do not rely on the model).
-	h.applyExtractedContextToPlan(&plan, in.Context)
+	// Apply context to plan (makes instance selection deterministic)
+	h.applyContextToPlan(&plan, in.Context)
 
 	if err := router.ValidatePlan(plan, policy, catalog, in.MaxSteps); err != nil {
 		return errorResult(err.Error() + "\nplan=" + string(rawPlan)), nil
@@ -240,28 +192,44 @@ func (h *Handler) runRouter(ctx context.Context, args json.RawMessage) (*mcp.Cal
 
 	if !in.DryRun {
 		execSteps, manifest, err := h.executePlan(ctx, plan, policy, in.Output, in.Parallelism)
-		if err != nil {
-			res.ExecutedSteps = execSteps
-			res.Manifest = manifest
-			return jsonResult(res), nil
-		}
+		// Always return partial results even if execution failed
 		res.ExecutedSteps = execSteps
 		res.Manifest = manifest
+		if err != nil {
+			// Include error in result but still return partial execution
+			return formatRouterResult(res, in.Format)
+		}
 	}
 
-	if in.IncludeAnswer && mode != "planner" {
+	if in.IncludeAnswer && in.Mode != "planner" {
 		answer, err := router.Summarize(ctx, cl, in.Input, res)
 		if err == nil {
 			res.Answer = answer
 		}
+		// Note: We still return partial results even if summarization fails
 	}
 
-	if strings.EqualFold(in.Format, "text") {
-		// Very small text wrapper around JSON.
-		b, _ := json.MarshalIndent(res, "", "  ")
-		return textResult(fmt.Sprintf("%s\n", string(b))), nil
+	return formatRouterResult(res, in.Format)
+}
+
+// buildExecutorAnswer creates a deterministic summary for executor mode (no LLM required).
+func (h *Handler) buildExecutorAnswer(res router.RouterResult) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Executed %d step(s).\n", len(res.ExecutedSteps)))
+	for i, st := range res.ExecutedSteps {
+		if st.OK {
+			sb.WriteString(fmt.Sprintf("%d) %s: ok\n", i+1, st.Name))
+		} else {
+			sb.WriteString(fmt.Sprintf("%d) %s: error: %s\n", i+1, st.Name, st.Error))
+		}
 	}
-	return jsonResult(res), nil
+	if res.Manifest != nil && len(res.Manifest.Artifacts) > 0 {
+		sb.WriteString("\nArtifacts:\n")
+		for _, a := range res.Manifest.Artifacts {
+			sb.WriteString(fmt.Sprintf("- %s (%d bytes)\n", a.Path, a.Bytes))
+		}
+	}
+	return sb.String()
 }
 
 type discoveryFastPath struct {
@@ -683,12 +651,12 @@ func (h *Handler) buildRouterCatalog() []router.ToolCatalogItem {
 	items := make([]router.ToolCatalogItem, 0, len(h.registry.ListActive())+len(local))
 
 	for _, t := range h.BuiltinTools() {
-		// Do not expose router/query itself to the router (prevent recursive calls).
-		if t.Name == "router" || t.Name == "query" {
+		// Do not expose query itself to the router (prevent recursive calls).
+		if t.Name == "query" {
 			continue
 		}
 		// Dev-only tools are hidden from routing unless dev mode is enabled.
-		if t.Name == "dev_scaffold_tool" && !devModeEnabled() {
+		if t.Name == "dev_scaffold_tool" && !envutil.DevModeEnabled() {
 			continue
 		}
 		items = append(items, router.ToolCatalogItem{
@@ -703,8 +671,8 @@ func (h *Handler) buildRouterCatalog() []router.ToolCatalogItem {
 	// Upstream tools: iterate over known categories' tool lists (registry doesn't currently expose raw tool map).
 	for _, cat := range h.registry.ListCategories() {
 		for _, name := range cat.Tools {
-			// Never route to an upstream tool called query/router (prevents recursion when chaining mcp-lens instances).
-			if name == "router" || name == "query" {
+			// Never route to an upstream tool called query (prevents recursion when chaining mcp-lens instances).
+			if name == "query" {
 				continue
 			}
 			tool, ok := h.registry.GetTool(name)
@@ -1002,3 +970,23 @@ func (h *Handler) createContinuationStep(originalStep router.PlanStep, result ma
 
 	return nil
 }
+
+// buildPolicy creates a policy with dynamic tools included (Iteration 1: Task 0009).
+func (h *Handler) buildPolicy() router.Policy {
+	policy := router.DefaultPolicy()
+
+	// Add active dynamic tools to AllowLocal
+	if h.execDeps != nil && h.execDeps.ToolRegistry != nil {
+		dynamicTools, err := h.execDeps.ToolRegistry.List(context.Background())
+		if err == nil {
+			for _, dt := range dynamicTools {
+				if dt.Status == "active" {
+					policy.AllowLocal[dt.Name] = struct{}{}
+				}
+			}
+		}
+	}
+
+	return policy
+}
+

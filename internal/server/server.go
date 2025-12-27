@@ -2,25 +2,37 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/golovatskygroup/mcp-lens/internal/discovery"
+	"github.com/golovatskygroup/mcp-lens/internal/envutil"
+	"github.com/golovatskygroup/mcp-lens/internal/executor"
+	"github.com/golovatskygroup/mcp-lens/internal/executor/docker"
+	"github.com/golovatskygroup/mcp-lens/internal/executor/native"
 	"github.com/golovatskygroup/mcp-lens/internal/proxy"
 	"github.com/golovatskygroup/mcp-lens/internal/registry"
+	"github.com/golovatskygroup/mcp-lens/internal/tool"
 	"github.com/golovatskygroup/mcp-lens/internal/tools"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
+
+	_ "github.com/mattn/go-sqlite3" // SQLite driver for tool registry
 )
 
 // Server is the main MCP proxy server
 type Server struct {
-	transport *mcp.Transport
-	registry  *registry.Registry
-	proxy     *proxy.Proxy
-	handler   *tools.Handler
-	ctx       context.Context
+	transport     *mcp.Transport
+	registry      *registry.Registry
+	proxy         *proxy.Proxy
+	handler       *tools.Handler
+	ctx           context.Context
+	dockerManager *docker.Manager
+	toolRegistryDB *sql.DB
 }
 
 // New creates a new MCP proxy server
@@ -40,11 +52,13 @@ func New(ctx context.Context, upstreamCfg proxy.Config) *Server {
 		return prx.CallTool(ctx, name, args)
 	})
 
+	// Initialize execution dependencies (Docker, native executor, tool registry, discovery)
+	s.initExecutionDependencies(ctx)
+
 	// Make tool discovery include local (proxy-provided) tools as well.
 	localTools := s.handler.BuiltinTools()
 	// Hide dev-only tools from discovery unless explicitly enabled.
-	devMode := strings.TrimSpace(os.Getenv("MCP_LENS_DEV_MODE"))
-	devOn := devMode == "1" || strings.EqualFold(devMode, "true") || strings.EqualFold(devMode, "yes")
+	devOn := envutil.DevModeEnabled()
 	if !devOn {
 		filtered := make([]mcp.Tool, 0, len(localTools))
 		for _, t := range localTools {
@@ -63,6 +77,9 @@ func New(ctx context.Context, upstreamCfg proxy.Config) *Server {
 
 // Run starts the server main loop
 func (s *Server) Run() error {
+	// Cleanup execution dependencies on shutdown
+	defer s.Cleanup(s.ctx)
+
 	// Start upstream proxy
 	if err := s.proxy.Start(s.ctx); err != nil {
 		return fmt.Errorf("failed to start upstream: %w", err)
@@ -147,20 +164,25 @@ func (s *Server) handleInitialize(req *mcp.Request) *mcp.Response {
 }
 
 func (s *Server) handleListTools(req *mcp.Request) *mcp.Response {
-	// Expose only the `query` tool (user-facing entrypoint).
-	// `router` is hidden from tools/list but still callable for backwards compatibility.
-	var queryTool *mcp.Tool
-	for _, t := range s.handler.BuiltinTools() {
-		if t.Name == "query" {
-			tt := t
-			queryTool = &tt
-			break
-		}
+	// Expose core tools for code execution + query as main entrypoint.
+	// Adapter tools (jira_*, confluence_*, grafana_*, github_*) are accessed via query.
+	exposedTools := map[string]bool{
+		"query":         true, // Main entrypoint for routing
+		"execute_code":  true, // Code execution (native + Docker)
+		"start_runtime": true, // Pre-start Docker container
+		"register_tool": true, // Register dynamic tool
+		"rollback_tool": true, // Rollback tool version
+		"discover_api":  true, // API discovery via Perplexity
+		"list_adapters": true, // List available API adapters
+		"search_tools":  true, // Search available tools
+		"describe_tool": true, // Get tool schema
 	}
 
 	tools := []mcp.Tool{}
-	if queryTool != nil {
-		tools = append(tools, *queryTool)
+	for _, t := range s.handler.BuiltinTools() {
+		if exposedTools[t.Name] {
+			tools = append(tools, t)
+		}
 	}
 
 	result := mcp.ListToolsResult{
@@ -183,8 +205,21 @@ func (s *Server) handleCallTool(req *mcp.Request) *mcp.Response {
 	var result *mcp.CallToolResult
 	var err error
 
-	// `query` is the primary entrypoint; `router` kept for backwards compatibility.
-	if params.Name == "query" || params.Name == "router" {
+	// Core tools that can be called directly
+	directTools := map[string]bool{
+		"query":         true,
+		"execute_code":  true,
+		"start_runtime": true,
+		"register_tool": true,
+		"rollback_tool": true,
+		"discover_api":  true,
+		"list_adapters": true,
+		"search_tools":  true,
+		"describe_tool": true,
+		"execute_tool":  true, // For executing discovered tools
+	}
+
+	if directTools[params.Name] {
 		result, err = s.handler.Handle(s.ctx, params.Name, params.Arguments)
 	} else {
 		result = &mcp.CallToolResult{
@@ -212,77 +247,149 @@ func (s *Server) handlePing(req *mcp.Request) *mcp.Response {
 }
 
 func (s *Server) buildInstructions() string {
-	var sb strings.Builder
-	sb.WriteString("GitHub MCP Proxy with Dynamic Tool Discovery.\n\n")
-	sb.WriteString("Instead of loading all 50+ GitHub tools, this proxy provides a small set of local tools for discovery + PR review, plus on-demand upstream tools.\n\n")
-
-	sb.WriteString("## How to use this proxy\n\n")
-	sb.WriteString("Call the `query` tool with a free-form request. The proxy will:\n")
-	sb.WriteString("1. Plan which tools to call (up to max_steps).\n")
-	sb.WriteString("2. Validate the plan against a read-only policy.\n")
-	sb.WriteString("3. Execute the plan and return results.\n\n")
-	sb.WriteString("Example:\n")
-	sb.WriteString("  {\"name\": \"query\", \"arguments\": {\"input\": \"Show open PRs in owner/repo\"}}\n\n")
-
-	sb.WriteString("## Discovery (no LLM required)\n\n")
-	sb.WriteString("You can always ask for tool discovery without configuring OpenRouter:\n")
-	sb.WriteString("- \"help\"\n")
-	sb.WriteString("- \"search tools grafana\"\n")
-	sb.WriteString("- \"describe tool confluence_get_page\"\n\n")
-
-	sb.WriteString("## Output shaping (optional)\n\n")
-	sb.WriteString("To reduce noisy JSON-heavy results, pass `output` in query arguments:\n")
-	sb.WriteString("- view: full|summary|metadata|errors_only\n")
-	sb.WriteString("- include_fields / exclude_fields (paths like a.b[0].c or /a/b/0/c)\n")
-	sb.WriteString("- max_items / max_depth / redact\n\n")
-
-	sb.WriteString("## Confluence body formats\n\n")
-	sb.WriteString("Confluence page bodies are markup by design:\n")
-	sb.WriteString("- body.view is rendered HTML (good for saving as .html)\n")
-	sb.WriteString("- body.storage is Confluence storage XHTML (better for deterministic parsing)\n\n")
-
-	sb.WriteString("## Large results (artifacts)\n\n")
-	sb.WriteString("If a tool result is too large, it may be stored as an artifact and replaced with:\n")
-	sb.WriteString("- artifact_uri: artifact://<id>\n")
-	sb.WriteString("- artifact_path: local file path\n")
-	sb.WriteString("Artifacts are also exposed via MCP resources: resources/list + resources/read.\n\n")
-
-	sb.WriteString("Local tools (used internally by the router):\n")
-	sb.WriteString("- search_tools: Find tools by keyword or category (format=text|json)\n")
-	sb.WriteString("- describe_tool: Get full schema of a specific tool\n")
-	sb.WriteString("- execute_tool: Run an upstream tool (and activate it for the session)\n")
-	sb.WriteString("- get_pull_request_details / list_pull_request_files / get_pull_request_diff / list_pull_request_commits / get_pull_request_checks\n")
-	sb.WriteString("- prepare_pull_request_review_bundle\n\n")
-
-	devMode := strings.TrimSpace(os.Getenv("MCP_LENS_DEV_MODE"))
-	if devMode == "1" || strings.EqualFold(devMode, "true") || strings.EqualFold(devMode, "yes") {
-		sb.WriteString("Dev-only tools (require MCP_LENS_DEV_MODE=1):\n")
-		sb.WriteString("- dev_scaffold_tool: generate patch + isolated git worktree for a new local tool\n\n")
+	lines := []string{
+		"mcp-lens is a read-only MCP proxy that routes requests to internal and upstream tools.",
+		"Use `query` for most tasks: provide a free-form request and the proxy will plan, validate (read-only), and execute the necessary steps.",
+		"Example: {\"name\":\"query\",\"arguments\":{\"input\":\"Show open PRs in owner/repo\",\"output\":{\"view\":\"summary\"}}}",
+		"To discover capabilities, use `search_tools` then `describe_tool` (or just ask via `query`).",
+		"For noisy outputs, set `output.view` to `summary` or `errors_only` in `query` arguments.",
+		"Large outputs may be returned as artifacts (`artifact_uri` / `artifact_path`); fetch them via `resources/read`.",
+		"Never attempt mutations (create/update/delete/merge/push); ask the user for confirmation and return guidance instead.",
 	}
 
-	sb.WriteString("Jira local tools (read-only by default policy):\n")
-	sb.WriteString("- jira_get_myself / jira_list_projects / jira_search_issues / jira_get_issue / jira_get_issue_comments / jira_get_issue_transitions\n")
-	sb.WriteString("- jira_export_tasks (exports to local files + expands known links)\n\n")
-
-	sb.WriteString("Notes:\n")
-	sb.WriteString("- GitHub 404 often means private repo or missing access. Set GITHUB_TOKEN for API access.\n\n")
-	sb.WriteString("- Jira auth (local tools):\n")
-	sb.WriteString("  - Cloud scripts: set JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN\n")
-	sb.WriteString("  - Data Center/Server: set JIRA_BASE_URL + JIRA_PAT (Bearer)\n")
-	sb.WriteString("  - OAuth 2.0 (3LO): set JIRA_OAUTH_ACCESS_TOKEN + JIRA_CLOUD_ID (uses api.atlassian.com)\n\n")
-	sb.WriteString("- Multi-Jira setup:\n")
-	sb.WriteString("  - Set JIRA_CLIENTS_JSON (map of client aliases -> config) and optionally JIRA_DEFAULT_CLIENT.\n")
-	sb.WriteString("  - In queries, prefix input with `jira <client>` to route Jira calls to that client.\n\n")
-	sb.WriteString("Available categories:\n")
-
-	for _, cat := range s.registry.ListCategories() {
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", cat.Name, cat.Description))
+	if envutil.DevModeEnabled() {
+		lines = append(lines, "Dev mode is enabled: `query` may use dev-only scaffolding tools (e.g. `dev_scaffold_tool`) for generating new local tool code.")
 	}
 
-	sb.WriteString(fmt.Sprintf("\nTotal available tools: %d\n", s.registry.ToolCount()))
-	return sb.String()
+	return strings.Join(lines, "\n")
 }
 
 func logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[mcp-proxy] "+format+"\n", args...)
+}
+
+// initExecutionDependencies initializes the code execution infrastructure.
+// Configuration via environment variables:
+//   - MCP_ENABLE_DOCKER=1: Enable Docker runtime for code execution (requires Docker)
+//   - MCP_ENABLE_NATIVE_EXEC=1: Enable native code execution (Go, JS, Python)
+//   - MCP_ENABLE_TOOL_REGISTRY=1: Enable dynamic tool registration
+//   - MCP_TOOL_REGISTRY_PATH: Path to SQLite database for tool registry (default: ~/.mcp-lens/tools.db)
+//   - PERPLEXITY_API_KEY: API key for Perplexity discovery client
+func (s *Server) initExecutionDependencies(ctx context.Context) {
+	deps := &tools.ExecutionDependencies{}
+	componentsEnabled := 0
+
+	// Initialize Docker manager if enabled
+	if os.Getenv("MCP_ENABLE_DOCKER") == "1" {
+		dockerMgr, err := docker.NewManager(docker.DefaultConfig())
+		if err != nil {
+			logf("Warning: Failed to initialize Docker manager: %v", err)
+		} else {
+			deps.DockerManager = dockerMgr
+			s.dockerManager = dockerMgr
+			logf("Docker runtime manager initialized")
+			componentsEnabled++
+		}
+	}
+
+	// Initialize native executor if enabled
+	if os.Getenv("MCP_ENABLE_NATIVE_EXEC") == "1" {
+		// Create sandbox and validator for native execution
+		sandbox := executor.DefaultSandboxConfig()
+		validator := executor.NewValidator(sandbox)
+
+		// Create native executor
+		nativeExec := executor.NewNativeExecutor(sandbox, validator)
+
+		// Create and attach language-specific executors
+		goExecutor := native.NewGoExecutor(sandbox)
+		jsExecutor := native.NewJSExecutor(sandbox)
+		pythonExecutor := native.NewPythonExecutor(sandbox)
+
+		nativeExec.SetGoExecutor(goExecutor)
+		nativeExec.SetJavaScriptExecutor(jsExecutor)
+		nativeExec.SetPythonExecutor(pythonExecutor)
+
+		deps.NativeExecutor = nativeExec
+		logf("Native code executor initialized (Go, JavaScript, Python)")
+		componentsEnabled++
+	}
+
+	// Initialize tool registry if enabled
+	if os.Getenv("MCP_ENABLE_TOOL_REGISTRY") == "1" {
+		dbPath := os.Getenv("MCP_TOOL_REGISTRY_PATH")
+		if dbPath == "" {
+			homeDir, err := os.UserHomeDir()
+			if err == nil {
+				dbPath = homeDir + "/.mcp-lens/tools.db"
+			} else {
+				dbPath = "/tmp/mcp-lens-tools.db"
+			}
+		}
+
+		// Ensure directory exists
+		if dir := dbPath[:strings.LastIndex(dbPath, "/")]; dir != "" {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				logf("Warning: Failed to create tool registry directory: %v", err)
+			}
+		}
+
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			logf("Warning: Failed to open tool registry database: %v", err)
+		} else {
+			s.toolRegistryDB = db
+			cache := tool.NewToolCache(time.Hour, 100)
+			registry, err := tool.NewSQLiteRegistry(db, cache)
+			if err != nil {
+				logf("Warning: Failed to initialize tool registry: %v", err)
+				db.Close()
+				s.toolRegistryDB = nil
+			} else {
+				deps.ToolRegistry = registry
+				logf("Tool registry initialized at %s", dbPath)
+				componentsEnabled++
+			}
+		}
+	}
+
+	// Initialize discovery client (always available, uses Perplexity API key if set)
+	perplexityKey := os.Getenv("PERPLEXITY_API_KEY")
+	if perplexityKey != "" {
+		discoveryClient := discovery.NewClient(discovery.WithPerplexityAPIKey(perplexityKey))
+		deps.Discovery = discoveryClient
+		logf("Discovery client initialized with Perplexity API")
+		componentsEnabled++
+	} else {
+		// Initialize without API key - will fail gracefully when used
+		discoveryClient := discovery.NewClient()
+		deps.Discovery = discoveryClient
+		logf("Discovery client initialized (no Perplexity API key - discovery will be limited)")
+	}
+
+	// Set dependencies on handler
+	if componentsEnabled > 0 {
+		s.handler.SetExecutionDependencies(deps)
+		logf("Execution dependencies configured (%d components)", componentsEnabled)
+	} else {
+		logf("No execution dependencies enabled. Set environment variables to enable:")
+		logf("  MCP_ENABLE_DOCKER=1      - Docker runtime for code execution")
+		logf("  MCP_ENABLE_NATIVE_EXEC=1 - Native execution (Go, JS, Python)")
+		logf("  MCP_ENABLE_TOOL_REGISTRY=1 - Dynamic tool registration")
+		logf("  PERPLEXITY_API_KEY       - API discovery via Perplexity")
+	}
+}
+
+// Cleanup releases resources held by the server
+func (s *Server) Cleanup(ctx context.Context) {
+	if s.dockerManager != nil {
+		if err := s.dockerManager.Close(ctx); err != nil {
+			logf("Warning: Failed to cleanup Docker manager: %v", err)
+		}
+	}
+	if s.toolRegistryDB != nil {
+		if err := s.toolRegistryDB.Close(); err != nil {
+			logf("Warning: Failed to close tool registry database: %v", err)
+		}
+	}
 }

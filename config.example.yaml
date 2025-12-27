@@ -1,8 +1,33 @@
-# Example configuration for mcp-github-proxy
+# Example configuration for mcp-lens (Smart MCP Router)
 #
-# This proxy starts an upstream MCP server as a child process.
-# Currently the intended upstream is the official GitHub MCP server.
+# This router provides context-saving smart routing between LLMs and MCP servers.
+# It uses an explicit Tool Catalog instead of runtime tool discovery to minimize context usage.
 
+# Router configuration for context-saving smart routing
+router:
+  # Tool catalog configuration
+  tool_catalog:
+    # Source: "inline" (tools defined in config) or "file" (load from JSON file)
+    source: "inline"
+    # Inline tools (when source="inline")
+    inline_tools: []
+    # File path (when source="file")
+    # file_path: "./tools.json"
+  
+  # Top-K tool selection: number of most relevant tools to include in prompt
+  # Set to 0 to include all tools (not recommended for large catalogs)
+  top_k_tools: 10
+  
+  # Schema budget: max characters per tool schema (0 = no compression)
+  # Recommended: 500-1000 to balance detail vs context usage
+  schema_budget: 800
+  
+  # Total prompt budget: max total characters for entire prompt (0 = no limit)
+  # This includes system prompt, user input, context, and tool schemas
+  total_prompt_budget: 0
+
+# Upstream MCP server configuration (optional)
+# The router can proxy to upstream MCP servers
 upstream:
   command: "npx"
   args:

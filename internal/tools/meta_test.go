@@ -26,22 +26,6 @@ func TestBuiltinToolsContainsQuery(t *testing.T) {
 	}
 }
 
-func TestBuiltinToolsContainsRouter(t *testing.T) {
-	reg := registry.NewRegistry()
-	h := NewHandler(reg, nil)
-
-	found := false
-	for _, tool := range h.BuiltinTools() {
-		if tool.Name == "router" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected BuiltinTools to contain 'router' for backwards compat")
-	}
-}
-
 func TestIsLocalToolQuery(t *testing.T) {
 	reg := registry.NewRegistry()
 	h := NewHandler(reg, nil)
@@ -49,8 +33,8 @@ func TestIsLocalToolQuery(t *testing.T) {
 	if !h.IsLocalTool("query") {
 		t.Fatal("expected 'query' to be local tool")
 	}
-	if !h.IsLocalTool("router") {
-		t.Fatal("expected 'router' to be local tool")
+	if h.IsLocalTool("router") {
+		t.Fatal("expected 'router' to NOT be local tool (deprecated and removed)")
 	}
 }
 

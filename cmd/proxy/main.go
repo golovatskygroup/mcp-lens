@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/golovatskygroup/mcp-lens/internal/cli"
 	"github.com/golovatskygroup/mcp-lens/internal/presets"
 	"github.com/golovatskygroup/mcp-lens/internal/proxy"
 	"github.com/golovatskygroup/mcp-lens/internal/server"
@@ -33,7 +34,40 @@ type Config struct {
 
 func main() {
 	configPath := flag.String("config", "", "Path to config file")
+	listPresets := flag.Bool("list-presets", false, "List all available presets")
+	setup := flag.Bool("setup", false, "Run interactive setup wizard")
+	checkPreset := flag.String("check", "", "Check availability of a preset")
 	flag.Parse()
+
+	// Handle setup command (also check for "setup" as positional arg)
+	if *setup || (flag.NArg() > 0 && flag.Arg(0) == "setup") {
+		wizard := cli.NewWizard()
+		if err := wizard.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Setup error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Handle list-presets command
+	if *listPresets {
+		cli.ListPresets(os.Stdout)
+		return
+	}
+
+	// Handle check command
+	if *checkPreset != "" {
+		result, err := cli.CheckServerAvailability(*checkPreset)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		result.PrintResult(os.Stdout)
+		if !result.IsReady() {
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Default config with github preset
 	cfg := Config{

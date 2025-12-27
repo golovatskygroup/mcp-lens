@@ -98,17 +98,17 @@ func (e *NativeExecutor) Execute(ctx context.Context, req ExecuteRequest) (*Exec
 	switch req.Language {
 	case LanguageGo:
 		if e.goExecutor == nil {
-			return nil, fmt.Errorf("Go executor not initialized")
+			return nil, fmt.Errorf("Go executor not initialized. Set MCP_ENABLE_NATIVE_EXEC=1")
 		}
 		executor = e.goExecutor
 	case LanguageJavaScript:
 		if e.jsExecutor == nil {
-			return nil, fmt.Errorf("JavaScript executor not initialized")
+			return nil, fmt.Errorf("JavaScript executor not initialized. Set MCP_ENABLE_NATIVE_EXEC=1")
 		}
 		executor = e.jsExecutor
 	case LanguagePython:
 		if e.pythonExecutor == nil {
-			return nil, fmt.Errorf("Python executor not initialized")
+			return nil, fmt.Errorf("Python executor not initialized. Set MCP_ENABLE_NATIVE_EXEC=1")
 		}
 		executor = e.pythonExecutor
 	default:

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golovatskygroup/mcp-lens/internal/envutil"
 	"github.com/golovatskygroup/mcp-lens/internal/router"
 	"github.com/golovatskygroup/mcp-lens/pkg/mcp"
 )
@@ -38,7 +39,7 @@ type devScaffoldToolInput struct {
 }
 
 func (h *Handler) devScaffoldTool(ctx context.Context, args json.RawMessage) (*mcp.CallToolResult, error) {
-	if !devModeEnabled() {
+	if !envutil.DevModeEnabled() {
 		return errorResult("dev mode disabled: set MCP_LENS_DEV_MODE=1"), nil
 	}
 
@@ -396,11 +397,11 @@ func patchMetaForNewTool(path string, in devScaffoldToolInput, handlerMethod str
 	toolSchemaBytes, _ := json.MarshalIndent(in.InputSchema, "", "  ")
 	toolEntry := fmt.Sprintf("\t\t{\n\t\t\tName:        %q,\n\t\t\tDescription: %q,\n\t\t\tInputSchema: json.RawMessage(`%s`),\n\t\t},\n", in.ToolName, in.ToolDescription, string(toolSchemaBytes))
 	insertBefore := builtinInsertAnchor(in.Domain)
-	if idx := strings.Index(s, fmt.Sprintf("\t\t{\n\t\t\tName:        %q,", insertBefore)); idx >= 0 {
-		s = s[:idx] + toolEntry + s[idx:]
-	} else if idx := strings.Index(s, "\t\t{\n\t\t\tName:        \"router\""); idx >= 0 {
-		s = s[:idx] + toolEntry + s[idx:]
-	} else {
+		if idx := strings.Index(s, fmt.Sprintf("\t\t{\n\t\t\tName:        %q,", insertBefore)); idx >= 0 {
+			s = s[:idx] + toolEntry + s[idx:]
+		} else if idx := strings.Index(s, "\t\t{\n\t\t\tName:        \"query\""); idx >= 0 {
+			s = s[:idx] + toolEntry + s[idx:]
+		} else {
 		return fmt.Errorf("failed to locate BuiltinTools insertion point")
 	}
 
@@ -429,7 +430,7 @@ func patchMetaForNewTool(path string, in devScaffoldToolInput, handlerMethod str
 				s = s[:idx] + summary + s[idx:]
 			} else if idx := strings.Index(s, "\t\t{Name: \"grafana_health\""); idx >= 0 && in.Domain == "confluence" {
 				s = s[:idx] + summary + s[idx:]
-			} else if idx := strings.Index(s, "\t\t{Name: \"router\""); idx >= 0 {
+			} else if idx := strings.Index(s, "\t\t{Name: \"query\""); idx >= 0 {
 				s = s[:idx] + summary + s[idx:]
 			}
 		}
@@ -443,7 +444,7 @@ func addToolToIsLocalToolSwitch(file string, domain string, toolName string) (st
 	if funcStart < 0 {
 		return file, fmt.Errorf("IsLocalTool() not found")
 	}
-	caseStartRel := strings.Index(file[funcStart:], "case \"router\", \"query\"")
+	caseStartRel := strings.Index(file[funcStart:], "case \"query\"")
 	if caseStartRel < 0 {
 		return file, fmt.Errorf("IsLocalTool() case list not found")
 	}
@@ -490,9 +491,9 @@ func builtinInsertAnchor(domain string) string {
 	case "confluence":
 		return "grafana_health"
 	case "grafana":
-		return "router"
+		return "query"
 	default:
-		return "router"
+		return "query"
 	}
 }
 

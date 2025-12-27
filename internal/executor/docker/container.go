@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -90,8 +91,8 @@ func (c *ContainerLifecycle) Execute(ctx context.Context, code string, input int
 		return "", fmt.Errorf("container is not running")
 	}
 
-	// Prepare execution command
-	cmd, err := c.prepareCommand(code, input)
+	// Prepare execution command and environment (Iteration 3: Task 0009)
+	cmd, env, err := c.prepareCommand(code, input)
 	if err != nil {
 		return "", fmt.Errorf("failed to prepare command: %w", err)
 	}
@@ -99,6 +100,7 @@ func (c *ContainerLifecycle) Execute(ctx context.Context, code string, input int
 	// Create exec instance
 	execConfig := container.ExecOptions{
 		Cmd:          cmd,
+		Env:          env,
 		AttachStdout: true,
 		AttachStderr: true,
 	}
@@ -222,39 +224,76 @@ func (c *ContainerLifecycle) ensureImage(ctx context.Context) error {
 	return nil
 }
 
-// prepareCommand prepares the execution command based on language
-func (c *ContainerLifecycle) prepareCommand(code string, input interface{}) ([]string, error) {
+// prepareCommand prepares the execution command and environment based on language (Iteration 3: Task 0009)
+func (c *ContainerLifecycle) prepareCommand(code string, input interface{}) ([]string, []string, error) {
+	const maxEnvSize = 32 * 1024 // 32KB limit for environment variables
+
 	baseCmd, err := GetCommand(c.language)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	// Serialize input to JSON for MCP_INPUT_JSON env var
+	env := []string{}
+	var inputJSON []byte
+	if input != nil {
+		inputJSON, err = json.Marshal(input)
+		if err == nil {
+			if len(inputJSON) > maxEnvSize {
+				// Input is too large for env var, will write to file instead
+				env = append(env, "MCP_INPUT_FILE=/tmp/mcp_input.json")
+				env = append(env, "MCP_INPUT_JSON=") // Empty to indicate file should be used
+			} else {
+				env = append(env, fmt.Sprintf("MCP_INPUT_JSON=%s", string(inputJSON)))
+			}
+		}
 	}
 
 	// For compiled languages, we need to compile first
 	if NeedsCompilation(c.language) {
-		return c.prepareCompiledCommand(code, input, baseCmd)
+		cmd, err := c.prepareCompiledCommand(code, input, baseCmd, inputJSON, maxEnvSize)
+		return cmd, env, err
 	}
 
 	// For interpreted languages, execute directly
-	return c.prepareInterpretedCommand(code, input, baseCmd)
+	cmd, err := c.prepareInterpretedCommand(code, input, baseCmd, inputJSON, maxEnvSize)
+	return cmd, env, err
 }
 
-// prepareInterpretedCommand prepares command for interpreted languages
-func (c *ContainerLifecycle) prepareInterpretedCommand(code string, input interface{}, baseCmd []string) ([]string, error) {
+// prepareInterpretedCommand prepares command for interpreted languages (Iteration 4: Task 0009)
+func (c *ContainerLifecycle) prepareInterpretedCommand(code string, input interface{}, baseCmd []string, inputJSON []byte, maxEnvSize int) ([]string, error) {
+	// Prepare input file creation command if needed
+	inputFileCmd := ""
+	if inputJSON != nil && len(inputJSON) > maxEnvSize {
+		// Escape JSON for safe inclusion in shell command
+		escapedJSON := strings.ReplaceAll(string(inputJSON), "'", "'\"'\"'")
+		inputFileCmd = fmt.Sprintf("printf '%%s' '%s' > /tmp/mcp_input.json && ", escapedJSON)
+	}
+
 	switch c.language {
-	case LangRuby, LangPHP:
-		// Execute code directly
-		cmd := append(baseCmd, "-e", code)
+	case LangBash:
+		// Write to file to support multi-line scripts with proper newlines
+		escapedCode := strings.ReplaceAll(code, "'", "'\"'\"'")
+		cmd := []string{"sh", "-c", fmt.Sprintf("%sprintf '%%s' '%s' > /tmp/script.sh && sh /tmp/script.sh", inputFileCmd, escapedCode)}
 		return cmd, nil
 
-	case LangBash:
-		// Execute code as shell script
-		cmd := append(baseCmd, "-c", code)
+	case LangRuby:
+		// Write to file to support multi-line code
+		escapedCode := strings.ReplaceAll(code, "'", "'\"'\"'")
+		cmd := []string{"sh", "-c", fmt.Sprintf("%sprintf '%%s' '%s' > /tmp/script.rb && ruby /tmp/script.rb", inputFileCmd, escapedCode)}
+		return cmd, nil
+
+	case LangPHP:
+		// Write to file to support multi-line code
+		escapedCode := strings.ReplaceAll(code, "'", "'\"'\"'")
+		cmd := []string{"sh", "-c", fmt.Sprintf("%sprintf '%%s' '%s' > /tmp/script.php && php /tmp/script.php", inputFileCmd, escapedCode)}
 		return cmd, nil
 
 	case LangTypeScript:
-		// For TypeScript, we need to write to a file
-		// This is simplified - in production, you'd write to /tmp
-		cmd := []string{"sh", "-c", fmt.Sprintf("echo %q | npx ts-node", code)}
+		// Write code to a file to support multi-line code
+		// Use .mts extension and --esm flag for ES Modules support
+		escapedCode := strings.ReplaceAll(code, "'", "'\"'\"'")
+		cmd := []string{"sh", "-c", fmt.Sprintf("%sprintf '%%s' '%s' > /tmp/main.mts && npx ts-node --esm /tmp/main.mts", inputFileCmd, escapedCode)}
 		return cmd, nil
 
 	default:
@@ -263,13 +302,21 @@ func (c *ContainerLifecycle) prepareInterpretedCommand(code string, input interf
 }
 
 // prepareCompiledCommand prepares command for compiled languages
-func (c *ContainerLifecycle) prepareCompiledCommand(code string, input interface{}, baseCmd []string) ([]string, error) {
+func (c *ContainerLifecycle) prepareCompiledCommand(code string, input interface{}, baseCmd []string, inputJSON []byte, maxEnvSize int) ([]string, error) {
+	// Prepare input file creation command if needed
+	inputFileCmd := ""
+	if inputJSON != nil && len(inputJSON) > maxEnvSize {
+		// Escape JSON for safe inclusion in shell command
+		escapedJSON := strings.ReplaceAll(string(inputJSON), "'", "'\"'\"'")
+		inputFileCmd = fmt.Sprintf("printf '%%s' '%s' > /tmp/mcp_input.json && ", escapedJSON)
+	}
+
 	switch c.language {
 	case LangRust:
 		// Compile and run
 		cmd := []string{"sh", "-c", fmt.Sprintf(
-			"echo %q > /tmp/main.rs && rustc /tmp/main.rs -o /tmp/program && /tmp/program",
-			code,
+			"%secho %q > /tmp/main.rs && rustc /tmp/main.rs -o /tmp/program && /tmp/program",
+			inputFileCmd, code,
 		)}
 		return cmd, nil
 
@@ -277,8 +324,8 @@ func (c *ContainerLifecycle) prepareCompiledCommand(code string, input interface
 		// Extract class name from code (simplified)
 		className := "Main"
 		cmd := []string{"sh", "-c", fmt.Sprintf(
-			"echo %q > /tmp/%s.java && cd /tmp && javac %s.java && java %s",
-			code, className, className, className,
+			"%secho %q > /tmp/%s.java && cd /tmp && javac %s.java && java %s",
+			inputFileCmd, code, className, className, className,
 		)}
 		return cmd, nil
 

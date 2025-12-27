@@ -35,6 +35,41 @@ func TestValidatePlanRejectsQueryEntrypointTool(t *testing.T) {
 	}
 }
 
+func TestValidatePlanRejectsDiscoveryTools(t *testing.T) {
+	policy := DefaultPolicy()
+	catalog := []ToolCatalogItem{{Name: "search_tools", Source: "local"}}
+
+	// Test search_tools is rejected
+	plan := ModelPlan{Steps: []PlanStep{{Name: "search_tools", Source: "local", Args: json.RawMessage(`{}`)}}, FinalAnswerNeeded: false}
+	if err := ValidatePlan(plan, policy, catalog, 5); err == nil {
+		t.Fatalf("expected error for search_tools")
+	}
+	if err := ValidatePlan(plan, policy, catalog, 5); err != nil && !contains(err.Error(), "discovery") {
+		t.Fatalf("expected error message about discovery, got: %v", err)
+	}
+
+	// Test list_tools is rejected
+	catalog2 := []ToolCatalogItem{{Name: "list_tools", Source: "local"}}
+	plan2 := ModelPlan{Steps: []PlanStep{{Name: "list_tools", Source: "local", Args: json.RawMessage(`{}`)}}, FinalAnswerNeeded: false}
+	if err := ValidatePlan(plan2, policy, catalog2, 5); err == nil {
+		t.Fatalf("expected error for list_tools")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || 
+		(len(s) > len(substr) && containsHelper(s, substr)))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestValidatePlanValidatesArgsAgainstSchema(t *testing.T) {
 	policy := DefaultPolicy()
 	catalog := []ToolCatalogItem{{

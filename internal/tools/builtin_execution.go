@@ -207,7 +207,7 @@ func (h *Handler) executeCode(ctx context.Context, args json.RawMessage) (*mcp.C
 
 	return jsonResult(ExecuteCodeResult{
 		Status: "error",
-		Error:  "Code execution not available: execution dependencies not configured",
+		Error:  "Code execution not available. Set MCP_ENABLE_DOCKER=1 or MCP_ENABLE_NATIVE_EXEC=1",
 	}), nil
 }
 
@@ -272,31 +272,60 @@ func (h *Handler) executeDocker(ctx context.Context, lang string, params Execute
 		}), nil
 	}
 
-	// Check runtime status
-	status, err := h.execDeps.DockerManager.Status(ctx, dockerLang)
-	if err != nil {
-		// Try to start the container
-		status, err = h.execDeps.DockerManager.Start(ctx, dockerLang)
+	// Auto-retry configuration
+	const maxRetries = 6
+	const retryDelay = 2 * time.Second
+
+	// Check runtime status with auto-retry
+	var status *docker.RuntimeStatus
+	var err error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		status, err = h.execDeps.DockerManager.Status(ctx, dockerLang)
 		if err != nil {
+			// Try to start the container
+			status, err = h.execDeps.DockerManager.Start(ctx, dockerLang)
+			if err != nil {
+				return jsonResult(ExecuteCodeResult{
+					Status: "error",
+					Error:  fmt.Sprintf("Failed to start runtime: %v. Try: start_runtime({\"language\": \"%s\"})", err, lang),
+				}), nil
+			}
+		}
+
+		// If ready, proceed with execution
+		if status.Status == docker.StatusReady {
+			break
+		}
+
+		// If starting, wait and retry
+		if status.Status == docker.StatusStarting {
+			if attempt < maxRetries-1 {
+				select {
+				case <-ctx.Done():
+					return jsonResult(ExecuteCodeResult{
+						Status: "error",
+						Error:  "Context cancelled while waiting for container to start",
+					}), nil
+				case <-time.After(retryDelay):
+					continue
+				}
+			} else {
+				// Final attempt failed
+				return jsonResult(ExecuteCodeResult{
+					Status: "error",
+					Error:  fmt.Sprintf("Container not ready after %d attempts. Try: start_runtime({\"language\": \"%s\"})", maxRetries, lang),
+				}), nil
+			}
+		}
+
+		// Other status - error
+		if status.Status != docker.StatusReady {
 			return jsonResult(ExecuteCodeResult{
 				Status: "error",
-				Error:  fmt.Sprintf("Failed to start runtime: %v", err),
+				Error:  fmt.Sprintf("Container not ready: %s. Try: start_runtime({\"language\": \"%s\"})", status.Message, lang),
 			}), nil
 		}
-	}
-
-	if status.Status == docker.StatusStarting {
-		return jsonResult(ExecuteCodeResult{
-			Status:            "container_starting",
-			RetryAfterSeconds: docker.DefaultRetryAfterSeconds,
-		}), nil
-	}
-
-	if status.Status != docker.StatusReady {
-		return jsonResult(ExecuteCodeResult{
-			Status: "error",
-			Error:  fmt.Sprintf("Container not ready: %s", status.Message),
-		}), nil
 	}
 
 	// Execute code in container
@@ -332,7 +361,7 @@ func (h *Handler) startRuntime(ctx context.Context, args json.RawMessage) (*mcp.
 	}
 
 	if h.execDeps == nil || h.execDeps.DockerManager == nil {
-		return errorResult("Docker runtime manager not configured"), nil
+		return errorResult("Docker runtime manager not configured. Set MCP_ENABLE_DOCKER=1"), nil
 	}
 
 	// Map string to docker.Language
@@ -405,7 +434,7 @@ func (h *Handler) registerTool(ctx context.Context, args json.RawMessage) (*mcp.
 	}
 
 	// Check for conflicts with built-in tools
-	builtinNames := []string{"query", "router", "search_tools", "describe_tool", "execute_tool",
+	builtinNames := []string{"query", "search_tools", "describe_tool", "execute_tool",
 		"list_adapters", "execute_code", "start_runtime", "register_tool", "rollback_tool", "discover_api"}
 	for _, name := range builtinNames {
 		if params.Name == name {
@@ -422,7 +451,7 @@ func (h *Handler) registerTool(ctx context.Context, args json.RawMessage) (*mcp.
 	}
 
 	if h.execDeps == nil || h.execDeps.ToolRegistry == nil {
-		return errorResult("Tool registry not configured"), nil
+		return errorResult("Tool registry not configured. Set MCP_ENABLE_TOOL_REGISTRY=1"), nil
 	}
 
 	toolDef := &tool.ToolDefinition{
@@ -433,15 +462,32 @@ func (h *Handler) registerTool(ctx context.Context, args json.RawMessage) (*mcp.
 		InputSchema: params.InputSchema,
 	}
 
-	if err := h.execDeps.ToolRegistry.Register(ctx, toolDef); err != nil {
-		return errorResult("Failed to register tool: " + err.Error()), nil
+	// Check if tool already exists (upsert behavior)
+	existingTool, err := h.execDeps.ToolRegistry.Get(ctx, params.Name)
+	var operationStatus string
+	var finalVersion int
+
+	if err != nil || existingTool == nil {
+		// Tool doesn't exist - register new
+		if err := h.execDeps.ToolRegistry.Register(ctx, toolDef); err != nil {
+			return errorResult("Failed to register tool: " + err.Error() + ". Register it first with register_tool()"), nil
+		}
+		operationStatus = "created"
+		finalVersion = toolDef.Version
+	} else {
+		// Tool exists - update
+		if err := h.execDeps.ToolRegistry.Update(ctx, params.Name, toolDef); err != nil {
+			return errorResult("Failed to update tool: " + err.Error()), nil
+		}
+		operationStatus = "updated"
+		finalVersion = existingTool.Version + 1
 	}
 
 	return jsonResult(map[string]interface{}{
-		"status":  "success",
+		"status":  operationStatus,
 		"name":    toolDef.Name,
-		"version": toolDef.Version,
-		"message": fmt.Sprintf("Tool '%s' registered successfully (version %d)", toolDef.Name, toolDef.Version),
+		"version": finalVersion,
+		"message": fmt.Sprintf("Tool '%s' %s successfully (version %d)", toolDef.Name, operationStatus, finalVersion),
 	}), nil
 }
 
@@ -464,7 +510,7 @@ func (h *Handler) rollbackTool(ctx context.Context, args json.RawMessage) (*mcp.
 	}
 
 	if h.execDeps == nil || h.execDeps.ToolRegistry == nil {
-		return errorResult("Tool registry not configured"), nil
+		return errorResult("Tool registry not configured. Set MCP_ENABLE_TOOL_REGISTRY=1"), nil
 	}
 
 	if params.Version <= 0 {
@@ -514,7 +560,7 @@ func (h *Handler) discoverAPI(ctx context.Context, args json.RawMessage) (*mcp.C
 	}
 
 	if h.execDeps == nil || h.execDeps.Discovery == nil {
-		return errorResult("Discovery client not configured"), nil
+		return errorResult("Discovery client not configured. Set PERPLEXITY_API_KEY environment variable"), nil
 	}
 
 	// Map strategy string to discovery.DiscoveryStrategy

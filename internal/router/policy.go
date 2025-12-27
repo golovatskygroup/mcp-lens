@@ -1,8 +1,9 @@
 package router
 
 import (
-	"os"
 	"strings"
+
+	"github.com/golovatskygroup/mcp-lens/internal/envutil"
 )
 
 type Policy struct {
@@ -12,8 +13,17 @@ type Policy struct {
 
 func DefaultPolicy() Policy {
 	allowLocal := map[string]struct{}{
-		"search_tools":                       {},
-		"describe_tool":                      {},
+		// Note: search_tools is explicitly NOT allowed - router must use explicit ToolCatalog
+		"describe_tool": {},
+		"execute_tool":  {},
+		// Code execution tools (Stage 5 integration)
+		"execute_code":  {},
+		"start_runtime": {},
+		"register_tool": {},
+		"rollback_tool": {},
+		"discover_api":  {},
+		"list_adapters": {},
+		// Artifact tools
 		"artifact_save_text":                 {},
 		"artifact_append_text":               {},
 		"artifact_list":                      {},
@@ -65,7 +75,7 @@ func DefaultPolicy() Policy {
 		"grafana_get_alert_rule":             {},
 	}
 
-	if devModeEnabled() {
+	if envutil.DevModeEnabled() {
 		allowLocal["dev_scaffold_tool"] = struct{}{}
 	}
 
@@ -73,16 +83,20 @@ func DefaultPolicy() Policy {
 	return Policy{AllowLocal: allowLocal, AllowUpstream: map[string]struct{}{}}
 }
 
-func devModeEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("MCP_LENS_DEV_MODE"))
-	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
-}
-
+// IsAllowed checks if a tool is allowed by policy.
+// Explicitly blocks tool discovery tools (search_tools, list_tools) to enforce explicit catalog usage.
 func (p Policy) IsAllowed(source string, toolName string) bool {
 	nameLower := strings.ToLower(strings.TrimSpace(toolName))
 	if nameLower == "" {
 		return false
 	}
+	
+	// Explicitly block tool discovery/introspection tools
+	// Router must use explicit ToolCatalog instead of runtime discovery
+	if isDiscoveryTool(nameLower) {
+		return false
+	}
+	
 	if isMutatingName(nameLower) {
 		return false
 	}
@@ -97,6 +111,24 @@ func (p Policy) IsAllowed(source string, toolName string) bool {
 	default:
 		return false
 	}
+}
+
+// isDiscoveryTool checks if a tool name indicates tool discovery/introspection.
+// These tools are blocked to enforce explicit catalog usage and save context.
+func isDiscoveryTool(nameLower string) bool {
+	discoveryNames := []string{
+		"search_tools",
+		"list_tools",
+		"discover_tools",
+		"enumerate_tools",
+		"get_available_tools",
+	}
+	for _, d := range discoveryNames {
+		if nameLower == d {
+			return true
+		}
+	}
+	return false
 }
 
 func isMutatingName(nameLower string) bool {

@@ -96,3 +96,55 @@ This means that, in this environment, `functions.router` is **not usable for dis
 
 - Trigger: request the router to enumerate/describe available GitHub operations.
 - Result: policy block at the tool-discovery phase (before any GitHub action occurs).
+
+---
+
+## Resolution (TASK-002 Implementation)
+
+**Status**: ✅ **FIXED**
+
+The router has been updated to use an **explicit Tool Catalog** instead of runtime tool discovery. This resolves the policy block issue while maintaining context efficiency.
+
+### How It Works Now
+
+1. **Explicit Tool Catalog**: Tools are loaded from configuration (inline or file) rather than discovered at runtime. The catalog is provided to the router during initialization.
+
+2. **Top-K Selection**: The router uses `ToolCatalog.TopKByQuery()` to select only the most relevant tools for each query, minimizing context usage.
+
+3. **Schema Compression**: Tool schemas are compressed using `SummarizeSchema()` before being included in prompts, reducing token usage.
+
+4. **Policy Enforcement**: The router explicitly blocks discovery tools (`search_tools`, `list_tools`, etc.) in both policy checks and plan validation, ensuring no runtime discovery occurs.
+
+### How to Debug Tool Availability
+
+Instead of using `search_tools` (which is blocked), use one of these approaches:
+
+1. **Check Configuration**: Review `config.example.yaml` or your actual config file to see which tools are included in the catalog.
+
+2. **Use Tool Catalog API**: The `ToolCatalog` provides:
+   - `ListTools()`: Get all tools in the catalog
+   - `GetTool(name)`: Get a specific tool by name
+   - `TopKByQuery(query, k)`: Find most relevant tools for a query
+
+3. **MCP `tools/list`**: The MCP server exposes available tools via the standard `tools/list` method (this is separate from router planning).
+
+### Configuration Example
+
+```yaml
+router:
+  tool_catalog:
+    source: "inline"  # or "file" to load from JSON file
+    inline_tools: []  # Tools defined here
+  top_k_tools: 10     # Number of tools to include in prompt
+  schema_budget: 800  # Max characters per schema
+```
+
+### Error Messages
+
+If a plan attempts to use discovery tools, you'll now see:
+```
+invalid plan: tool discovery/introspection (search_tools) is not allowed; 
+router uses explicit ToolCatalog instead of runtime discovery
+```
+
+This clearly indicates that discovery tools are intentionally blocked and directs users to use the explicit catalog approach.

@@ -18,8 +18,9 @@ func TestPolicyBlocksMutations(t *testing.T) {
 
 func TestPolicyAllowsKnownLocalReadOnly(t *testing.T) {
 	p := DefaultPolicy()
-	if !p.IsAllowed("local", "search_tools") {
-		t.Fatalf("expected search_tools allowed")
+	// search_tools is explicitly blocked to enforce explicit ToolCatalog usage
+	if p.IsAllowed("local", "search_tools") {
+		t.Fatalf("expected search_tools blocked (router uses explicit ToolCatalog)")
 	}
 	if !p.IsAllowed("local", "describe_tool") {
 		t.Fatalf("expected describe_tool allowed")
@@ -29,6 +30,27 @@ func TestPolicyAllowsKnownLocalReadOnly(t *testing.T) {
 	}
 	if p.IsAllowed("local", "create_pull_request") {
 		t.Fatalf("expected unknown local tool blocked")
+	}
+}
+
+func TestPolicyBlocksDiscoveryTools(t *testing.T) {
+	p := DefaultPolicy()
+	
+	discoveryTools := []string{
+		"search_tools",
+		"list_tools",
+		"discover_tools",
+		"enumerate_tools",
+		"get_available_tools",
+	}
+	
+	for _, tool := range discoveryTools {
+		if p.IsAllowed("local", tool) {
+			t.Errorf("expected discovery tool %s to be blocked", tool)
+		}
+		if p.IsAllowed("upstream", tool) {
+			t.Errorf("expected discovery tool %s to be blocked from upstream", tool)
+		}
 	}
 }
 

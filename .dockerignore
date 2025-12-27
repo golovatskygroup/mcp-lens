@@ -1,0 +1,54 @@
+# --- Project Specific Reductions ---
+# Exclude worktrees and stage/task directories to save context
+.worktrees/
+stage*/
+task*/
+
+# --- Build and Output Artifacts ---
+# Gleam build directory
+build/
+# General binary and output folders
+bin/
+out/
+dist/
+# Test coverage reports
+coverage/
+*.lcov
+
+# --- Gleam & Erlang Specifics ---
+# Dependencies are usually fetched during the Docker build stage
+# to ensure architecture compatibility
+erl_ilt/
+*.beam
+*.plt
+# If using rebar3/erlang directly
+_build/
+rebar.lock
+
+# --- Version Control ---
+.git/
+.gitignore
+.gitattributes
+.gitmodules
+
+# --- Editor and OS Junk ---
+.vscode/
+.idea/
+.elixir_ls/
+.gleam_ls/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Environment and Secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Documentation ---
+# Usually not needed for the runtime image
+docs/
+site/

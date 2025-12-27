@@ -7,9 +7,36 @@ import (
 	"strings"
 )
 
+// Plan creates a routing plan using the full catalog (legacy behavior).
+// For context-saving, prefer PlanWithCatalog which uses top-K selection.
 func Plan(ctx context.Context, cl *OpenRouterClient, userInput string, userCtx map[string]any, catalog []ToolCatalogItem, maxSteps int) (ModelPlan, []byte, error) {
+	return PlanWithCatalog(ctx, cl, userInput, userCtx, NewToolCatalog(catalog), maxSteps, 0, 0)
+}
+
+// PlanWithCatalog creates a routing plan using ToolCatalog with top-K selection and schema compression.
+// This is the recommended method for context-saving smart routing.
+// - topK: number of tools to include (0 = use all)
+// - schemaMaxChars: max characters per schema (0 = no compression)
+func PlanWithCatalog(ctx context.Context, cl *OpenRouterClient, userInput string, userCtx map[string]any, catalog *ToolCatalog, maxSteps int, topK int, schemaMaxChars int) (ModelPlan, []byte, error) {
+	var selectedTools []ToolCatalogItem
+	var err error
+	
+	if topK > 0 && schemaMaxChars > 0 {
+		// Use top-K selection with compressed schemas
+		selectedTools, err = catalog.GetTopKWithCompressedSchemas(userInput, topK, schemaMaxChars)
+		if err != nil {
+			return ModelPlan{}, nil, fmt.Errorf("failed to select tools: %w", err)
+		}
+	} else if topK > 0 {
+		// Use top-K selection without compression
+		selectedTools = catalog.TopKByQuery(userInput, topK)
+	} else {
+		// Use all tools (legacy behavior)
+		selectedTools = catalog.ListTools()
+	}
+	
 	system := BuildPlanSystemPrompt()
-	user, err := BuildPlanUserPrompt(userInput, userCtx, catalog, maxSteps)
+	user, err := BuildPlanUserPrompt(userInput, userCtx, selectedTools, maxSteps)
 	if err != nil {
 		return ModelPlan{}, nil, err
 	}
@@ -49,9 +76,18 @@ func ValidatePlan(plan ModelPlan, policy Policy, catalog []ToolCatalogItem, maxS
 		if s.Name == "" {
 			return fmt.Errorf("step name is required")
 		}
-		// `query`/`router` are entrypoints for MCP clients, not callable steps.
-		// If a plan contains them, it indicates recursive planning (often from chaining mcp-lens instances).
-		if s.Name == "query" || s.Name == "router" {
+		
+		// Explicitly block tool discovery/introspection tools.
+		// Router must use explicit ToolCatalog instead of runtime discovery to save context.
+		nameLower := strings.ToLower(s.Name)
+		if nameLower == "search_tools" || nameLower == "list_tools" || 
+		   nameLower == "discover_tools" || nameLower == "enumerate_tools" {
+			return fmt.Errorf("invalid plan: tool discovery/introspection (%q) is not allowed; router uses explicit ToolCatalog instead of runtime discovery", s.Name)
+		}
+		
+		// `query` is an entrypoint for MCP clients, not a callable step.
+		// If a plan contains it, it indicates recursive planning (often from chaining mcp-lens instances).
+		if s.Name == "query" {
 			return fmt.Errorf("invalid plan: step uses reserved tool %q (entrypoint); remove it from the tool catalog/upstreams", s.Name)
 		}
 		if s.Source != "local" && s.Source != "upstream" {
